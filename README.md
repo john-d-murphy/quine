@@ -287,7 +287,7 @@ Pygments    — syntax highlighting (optional, used by codehilite extension)
 Install:
 
 ```bash
-pip install pyyaml jinja2 markdown pygments
+uv sync
 ```
 
 ---
