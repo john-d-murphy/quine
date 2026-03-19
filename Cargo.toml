@@ -1,0 +1,17 @@
+[package]
+name = "life"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+clap = { version = ">=4.4, <4.5.22", features = ["derive"] }
+rusqlite = { version = ">=0.31, <0.32", features = ["bundled"] }
+serde = { version = ">=1.0.190, <1.0.220", features = ["derive"] }
+serde_yaml = ">=0.9.30, <0.9.34"
+sha2 = "0.10"
+glob = "0.3"
+walkdir = "2"
+thiserror = ">=1.0.50, <1.0.66"
+
+[dev-dependencies]
+tempfile = ">=3.9, <3.14"
