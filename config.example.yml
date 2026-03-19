@@ -1,0 +1,31 @@
+system:
+  db:        quine.db      # path to SQLite database
+  www:       www           # output directory for rendered HTML
+  templates: templates     # Jinja2 templates directory
+  static:    static        # CSS, JS, assets
+
+site:
+  title:        "My Quine"
+  base_url:     ""          # e.g. https://yoursite.com — leave empty for local
+  default_repo: "quine"    # fallback repo for bare {@region: name} in prose
+                            # that doesn't live inside any watched repo
+
+render:
+  target: public            # public | private (private includes all items)
+
+# Repos and directories to watch.
+# Each watch becomes a project page at /project/{id}/.
+# The first watch with default: true is the fallback for bare tag names.
+watches:
+  - id:         quine
+    path:       .             # path to the repo (relative to config.yml or absolute)
+    name:       "Quine"
+    visibility: public
+    default:    true          # this is the default repo for bare tag names
+
+# Additional directories to scan for prose files with {@region:} directives.
+# Watches are always scanned. Add extra directories here if your notes/journal
+# live outside the watched repos.
+# prose_roots:
+#   - ~/notes
+#   - ~/journal

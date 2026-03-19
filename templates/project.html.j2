@@ -1,0 +1,28 @@
+{% extends "base.html.j2" %}
+{% block content %}
+<div class="project-layout">
+
+  {% if watch.life_html %}
+  <article class="prose">
+    {{ watch.life_html | safe }}
+  </article>
+  <hr class="sep">
+  {% endif %}
+
+  {% if commits %}
+  <section class="commits">
+    <h2 class="commits-heading">commits</h2>
+    <ol class="commit-list">
+      {% for c in commits %}
+      <li class="commit">
+        <code class="commit-sha">{{ c.sha_short }}</code>
+        <span class="commit-title">{{ c.title }}</span>
+        <span class="commit-meta">{{ c.author }} · {{ c.date }}</span>
+      </li>
+      {% endfor %}
+    </ol>
+  </section>
+  {% endif %}
+
+</div>
+{% endblock %}
