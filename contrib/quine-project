@@ -1,0 +1,433 @@
+#!/usr/bin/env python3
+"""quine-project — first projector for quine.
+
+Reads the SQLite graph DB and generates markdown output.
+This is the proof that projectors are just programs that read
+the IR. No special framework. Any language. Just SQL queries
+and string formatting.
+
+Usage:
+    quine-project <db> graph              Overview of the whole graph.
+    quine-project <db> node <path>        Everything about one file.
+    quine-project <db> literate <path>    Weave code regions into a document.
+    quine-project <db> regions            All regions with prose, by file.
+    quine-project -h | --help
+"""
+
+import sqlite3
+import sys
+import os
+import textwrap
+
+
+def usage():
+    print(__doc__.strip())
+    sys.exit(0)
+
+
+def connect(db_path):
+    if not os.path.exists(db_path):
+        print(f"error: database not found: {db_path}", file=sys.stderr)
+        sys.exit(1)
+    return sqlite3.connect(db_path)
+
+
+def short_path(path, roots=None):
+    """Shorten a path for display. Strips common prefix if roots provided."""
+    if roots:
+        for root_path in roots:
+            if path.startswith(root_path):
+                rel = path[len(root_path):].lstrip("/")
+                return rel
+    # Fallback: use last 3 components
+    parts = path.split("/")
+    if len(parts) > 3:
+        return "…/" + "/".join(parts[-3:])
+    return path
+
+
+def get_roots(conn):
+    """Get all roots as {path: name}."""
+    rows = conn.execute("SELECT path, name FROM roots ORDER BY path").fetchall()
+    return {path: name for path, name in rows}
+
+
+# ---- graph overview ----
+
+def cmd_graph(conn):
+    roots = get_roots(conn)
+    root_paths = list(roots.keys())
+
+    node_count = conn.execute("SELECT COUNT(*) FROM nodes").fetchone()[0]
+    edge_count = conn.execute("SELECT COUNT(*) FROM edges").fetchone()[0]
+    region_count = conn.execute("SELECT COUNT(*) FROM regions").fetchone()[0]
+    attr_count = conn.execute("SELECT COUNT(*) FROM attributes").fetchone()[0]
+
+    print("# Knowledge Graph Overview\n")
+    print(f"**{node_count}** nodes, **{edge_count}** edges, "
+          f"**{region_count}** regions, **{attr_count}** attributes\n")
+
+    # Roots
+    print("## Roots\n")
+    for path, name in roots.items():
+        file_count = conn.execute(
+            "SELECT COUNT(*) FROM nodes WHERE root = ?", (path,)
+        ).fetchone()[0]
+        ref_targets = conn.execute(
+            "SELECT target FROM refs WHERE source = ?", (path,)
+        ).fetchall()
+        refs_str = ""
+        if ref_targets:
+            ref_names = []
+            for (t,) in ref_targets:
+                ref_name = roots.get(t, t.split("/")[-1])
+                ref_names.append(ref_name)
+            refs_str = f" → refs: {', '.join(ref_names)}"
+        print(f"- **{name}** ({file_count} files){refs_str}")
+        print(f"  `{path}`")
+    print()
+
+    # Most connected nodes (hubs)
+    print("## Hubs (most incoming edges)\n")
+    hubs = conn.execute("""
+        SELECT target, COUNT(*) as cnt
+        FROM edges GROUP BY target
+        ORDER BY cnt DESC LIMIT 10
+    """).fetchall()
+    if hubs:
+        for target, cnt in hubs:
+            sp = short_path(target, root_paths)
+            print(f"- **{sp}** — {cnt} incoming")
+    else:
+        print("*No edges yet.*")
+    print()
+
+    # Orphans (no edges at all)
+    print("## Orphans (no incoming or outgoing edges)\n")
+    orphans = conn.execute("""
+        SELECT n.path FROM nodes n
+        WHERE n.path NOT IN (SELECT source FROM edges)
+        AND n.path NOT IN (SELECT target FROM edges)
+        AND n.path NOT LIKE '%quine.yaml'
+        ORDER BY n.modified DESC
+        LIMIT 15
+    """).fetchall()
+    if orphans:
+        for (path,) in orphans:
+            sp = short_path(path, root_paths)
+            print(f"- {sp}")
+    else:
+        print("*Every file is connected.*")
+    print()
+
+    # Regions summary
+    if region_count > 0:
+        print("## Regions\n")
+        regions = conn.execute("""
+            SELECT file, name, start_line, end_line,
+                   CASE WHEN prose IS NOT NULL THEN 1 ELSE 0 END as has_prose
+            FROM regions ORDER BY file, start_line
+        """).fetchall()
+        current_file = None
+        for file, name, start, end, has_prose in regions:
+            sp = short_path(file, root_paths)
+            if sp != current_file:
+                current_file = sp
+                print(f"**{sp}**")
+            prose_marker = " ✎" if has_prose else ""
+            print(f"- `{name}` (lines {start}–{end}){prose_marker}")
+        print()
+
+    # Recent changelog
+    print("## Recent activity\n")
+    recent = conn.execute("""
+        SELECT timestamp, action, kind, path_a
+        FROM changelog ORDER BY timestamp DESC LIMIT 10
+    """).fetchall()
+    if recent:
+        for ts, action, kind, path_a in recent:
+            from datetime import datetime
+            dt = datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M")
+            sp = short_path(path_a, root_paths)
+            print(f"- `{dt}` {action} {kind}: {sp}")
+    else:
+        print("*No activity recorded.*")
+    print()
+
+
+# ---- node detail ----
+
+def cmd_node(conn, target_path):
+    roots = get_roots(conn)
+    root_paths = list(roots.keys())
+
+    # Resolve partial path matches
+    node = conn.execute(
+        "SELECT path, hash, size, modified, root FROM nodes WHERE path = ?",
+        (target_path,)
+    ).fetchone()
+
+    if not node:
+        # Try substring match
+        matches = conn.execute(
+            "SELECT path FROM nodes WHERE path LIKE ? ORDER BY modified DESC LIMIT 5",
+            (f"%{target_path}%",)
+        ).fetchall()
+        if matches:
+            if len(matches) == 1:
+                return cmd_node(conn, matches[0][0])
+            print(f"Multiple matches for '{target_path}':\n", file=sys.stderr)
+            for (m,) in matches:
+                print(f"  {m}", file=sys.stderr)
+            sys.exit(1)
+        else:
+            print(f"error: no node matching '{target_path}'", file=sys.stderr)
+            sys.exit(1)
+
+    path, hash_val, size, modified, root = node
+    sp = short_path(path, root_paths)
+    root_name = roots.get(root, root.split("/")[-1])
+
+    from datetime import datetime
+    mod_dt = datetime.fromtimestamp(modified).strftime("%Y-%m-%d %H:%M")
+
+    print(f"# {sp}\n")
+    print(f"- **root:** {root_name}")
+    print(f"- **modified:** {mod_dt}")
+    print(f"- **size:** {size:,} bytes")
+    print(f"- **hash:** `{hash_val[:12]}…`")
+    print(f"- **path:** `{path}`")
+    print()
+
+    # Outgoing edges
+    outgoing = conn.execute(
+        "SELECT target, fragment FROM edges WHERE source = ? ORDER BY target",
+        (path,)
+    ).fetchall()
+    if outgoing:
+        print("## Links to\n")
+        for target, fragment in outgoing:
+            tsp = short_path(target, root_paths)
+            frag = f"#{fragment}" if fragment else ""
+            print(f"- {tsp}{frag}")
+        print()
+
+    # Incoming edges
+    incoming = conn.execute(
+        "SELECT source, fragment FROM edges WHERE target = ? ORDER BY source",
+        (path,)
+    ).fetchall()
+    if incoming:
+        print("## Linked from\n")
+        for source, fragment in incoming:
+            ssp = short_path(source, root_paths)
+            frag = f" (fragment: {fragment})" if fragment else ""
+            print(f"- {ssp}{frag}")
+        print()
+
+    # Regions
+    regions = conn.execute(
+        "SELECT name, start_line, end_line, prose FROM regions WHERE file = ? ORDER BY start_line",
+        (path,)
+    ).fetchall()
+    if regions:
+        print("## Regions\n")
+        for name, start, end, prose in regions:
+            print(f"### `{name}` (lines {start}–{end})\n")
+            if prose:
+                print(prose.strip())
+                print()
+
+    # Attributes
+    attrs = conn.execute(
+        "SELECT key, value FROM attributes WHERE file = ? ORDER BY key",
+        (path,)
+    ).fetchall()
+    if attrs:
+        print("## Attributes\n")
+        for key, value in attrs:
+            print(f"- **{key}:** {value}")
+        print()
+
+
+# ---- literate document ----
+
+def cmd_literate(conn, target_path):
+    """Weave a code file's regions into a literate document.
+
+    Reads the actual source file from disk and interleaves the
+    extracted prose blocks with syntax-highlighted code blocks.
+    """
+    roots = get_roots(conn)
+    root_paths = list(roots.keys())
+
+    # Resolve path
+    node = conn.execute(
+        "SELECT path FROM nodes WHERE path = ?", (target_path,)
+    ).fetchone()
+
+    if not node:
+        matches = conn.execute(
+            "SELECT path FROM nodes WHERE path LIKE ? ORDER BY modified DESC LIMIT 5",
+            (f"%{target_path}%",)
+        ).fetchall()
+        if matches:
+            if len(matches) == 1:
+                return cmd_literate(conn, matches[0][0])
+            print(f"Multiple matches for '{target_path}':\n", file=sys.stderr)
+            for (m,) in matches:
+                print(f"  {m}", file=sys.stderr)
+            sys.exit(1)
+        else:
+            print(f"error: no node matching '{target_path}'", file=sys.stderr)
+            sys.exit(1)
+
+    path = node[0]
+    sp = short_path(path, root_paths)
+
+    # Get regions for this file
+    regions = conn.execute(
+        "SELECT name, start_line, end_line, prose FROM regions WHERE file = ? ORDER BY start_line",
+        (path,)
+    ).fetchall()
+
+    if not regions:
+        print(f"# {sp}\n")
+        print("*No regions found in this file.*")
+        return
+
+    # Read source file
+    try:
+        with open(path, "r") as f:
+            source_lines = f.readlines()
+    except FileNotFoundError:
+        print(f"error: source file not found: {path}", file=sys.stderr)
+        sys.exit(1)
+
+    # Detect language for code fences
+    ext = os.path.splitext(path)[1].lower()
+    lang_map = {
+        ".rs": "rust", ".py": "python", ".cpp": "cpp", ".c": "c",
+        ".h": "c", ".hpp": "cpp", ".scd": "supercollider",
+        ".js": "javascript", ".ts": "typescript", ".sh": "bash",
+        ".lua": "lua", ".yaml": "yaml", ".yml": "yaml",
+    }
+    lang = lang_map.get(ext, "")
+
+    # Get edges from this file
+    edges = conn.execute(
+        "SELECT target, fragment FROM edges WHERE source = ? ORDER BY target",
+        (path,)
+    ).fetchall()
+
+    print(f"# {sp}\n")
+
+    if edges:
+        print("*Connects to:*", end=" ")
+        edge_strs = []
+        for target, fragment in edges:
+            tsp = short_path(target, root_paths)
+            frag = f"#{fragment}" if fragment else ""
+            edge_strs.append(f"`{tsp}{frag}`")
+        print(", ".join(edge_strs))
+        print()
+
+    print("---\n")
+
+    # Weave regions
+    for name, start_line, end_line, prose in regions:
+        print(f"## {name}\n")
+
+        # Print prose blocks first (the narrative)
+        if prose:
+            print(prose.strip())
+            print()
+
+        # Print the code for this region
+        # Exclude the @region/@end marker lines and prose lines themselves
+        code_lines = []
+        for i in range(start_line - 1, min(end_line, len(source_lines))):
+            line = source_lines[i]
+            stripped = line.strip()
+            # Skip region markers
+            if "@region " in stripped or "@end " in stripped:
+                continue
+            # Skip prose lines (//| or #|)
+            if stripped.startswith("//|") or stripped.startswith("#|"):
+                continue
+            code_lines.append(source_lines[i].rstrip())
+
+        # Trim leading/trailing blank lines
+        while code_lines and not code_lines[0].strip():
+            code_lines.pop(0)
+        while code_lines and not code_lines[-1].strip():
+            code_lines.pop()
+
+        if code_lines:
+            print(f"```{lang}")
+            for line in code_lines:
+                print(line)
+            print("```\n")
+
+
+# ---- regions listing ----
+
+def cmd_regions(conn):
+    roots = get_roots(conn)
+    root_paths = list(roots.keys())
+
+    regions = conn.execute("""
+        SELECT file, name, start_line, end_line, prose
+        FROM regions ORDER BY file, start_line
+    """).fetchall()
+
+    if not regions:
+        print("*No regions found.*")
+        return
+
+    print("# All Regions\n")
+
+    current_file = None
+    for file, name, start, end, prose in regions:
+        sp = short_path(file, root_paths)
+        if sp != current_file:
+            current_file = sp
+            print(f"## {sp}\n")
+
+        print(f"### `{name}` (lines {start}–{end})\n")
+        if prose:
+            print(prose.strip())
+            print()
+
+
+# ---- main ----
+
+def main():
+    if len(sys.argv) < 3 or sys.argv[1] in ("-h", "--help"):
+        usage()
+
+    db_path = sys.argv[1]
+    command = sys.argv[2]
+    conn = connect(db_path)
+
+    if command == "graph":
+        cmd_graph(conn)
+    elif command == "node":
+        if len(sys.argv) < 4:
+            print("error: node command requires a path", file=sys.stderr)
+            sys.exit(1)
+        cmd_node(conn, sys.argv[3])
+    elif command == "literate":
+        if len(sys.argv) < 4:
+            print("error: literate command requires a path", file=sys.stderr)
+            sys.exit(1)
+        cmd_literate(conn, sys.argv[3])
+    elif command == "regions":
+        cmd_regions(conn)
+    else:
+        print(f"error: unknown command '{command}'", file=sys.stderr)
+        usage()
+
+
+if __name__ == "__main__":
+    main()
