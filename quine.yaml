@@ -2,6 +2,3 @@ name: "quine-source"
 refs: []
 exclude:
   - target
-  - "*.db"
-  - "*.db-shm"
-  - "*.db-wal"

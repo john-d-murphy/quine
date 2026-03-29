@@ -246,6 +246,14 @@ fn walk_subtree(
             let file_name = entry.file_name();
             let file_name_str = file_name.to_string_lossy();
 
+            // Never index the engine's own database files.
+            if file_name_str == "quine.db"
+                || file_name_str == "quine.db-shm"
+                || file_name_str == "quine.db-wal"
+            {
+                continue;
+            }
+
             // Skip files matching an exclude pattern.
             if exclude.iter().any(|p| p.matches(&file_name_str)) {
                 continue;
@@ -567,6 +575,26 @@ mod tests {
             .map(|f| f.path.as_path().file_name().unwrap().to_str().unwrap())
             .collect();
         assert!(!names.contains(&"HEAD"));
+    }
+
+    #[test]
+    fn walk_skips_quine_db_files() {
+        let dir = setup_test_dir();
+
+        fs::write(dir.path().join("quine.db"), "not a real db").unwrap();
+        fs::write(dir.path().join("quine.db-shm"), "shm").unwrap();
+        fs::write(dir.path().join("quine.db-wal"), "wal").unwrap();
+
+        let result = walk_seed(dir.path()).unwrap();
+
+        let names: Vec<&str> = result
+            .files
+            .iter()
+            .map(|f| f.path.as_path().file_name().unwrap().to_str().unwrap())
+            .collect();
+        assert!(!names.contains(&"quine.db"));
+        assert!(!names.contains(&"quine.db-shm"));
+        assert!(!names.contains(&"quine.db-wal"));
     }
 
     #[test]
