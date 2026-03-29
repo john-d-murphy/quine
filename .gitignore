@@ -1,0 +1,19 @@
+# Rust build artifacts
+debug/
+target/
+**/*.rs.bk
+*.pdb
+
+# Generated databases — quine.db is rebuildable from source
+*.db
+
+# Generated docs — rebuild with quine-weave
+quine_readme.pdf
+
+# Mutation testing
+**/mutants.out*/
+
+# Editor swap / backup
+*.swp
+*.swo
+*~

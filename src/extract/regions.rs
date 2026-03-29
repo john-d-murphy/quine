@@ -1,4 +1,4 @@
-use crate::errors::LifeError;
+use crate::errors::QuineError;
 use crate::types::{NodePath, ProseBlock, Region};
 
 // @region region-parser
@@ -6,7 +6,7 @@ use crate::types::{NodePath, ProseBlock, Region};
 //| markers and extracts prose blocks (lines starting with |).
 //|
 //| The self-referential moment: this file itself contains @region
-//| markers. When `life collect` processes the life source code,
+//| markers. When `quine collect` processes the quine source code,
 //| this function parses its own annotations. The quine eats its
 //| own tail.
 //|
@@ -35,7 +35,7 @@ pub fn extract_regions(
     file_path: &NodePath,
     content: &str,
     comment_prefix: Option<&str>,
-) -> Result<Vec<Region>, LifeError> {
+) -> Result<Vec<Region>, QuineError> {
     let prefix = match comment_prefix {
         Some(p) => p,
         None => return Ok(Vec::new()), // Freetext (markdown) — no regions.
@@ -59,7 +59,7 @@ pub fn extract_regions(
             if let Some(name) = parse_region_start(body) {
                 // Error: nested region.
                 if let Some(ref current) = open {
-                    return Err(LifeError::NestedRegion {
+                    return Err(QuineError::NestedRegion {
                         file: file_path.clone(),
                         outer: current.name.clone(),
                         inner: name,
@@ -68,7 +68,7 @@ pub fn extract_regions(
 
                 // Error: duplicate name.
                 if seen_names.contains(&name) {
-                    return Err(LifeError::DuplicateRegion {
+                    return Err(QuineError::DuplicateRegion {
                         file: file_path.clone(),
                         name,
                     });
@@ -297,9 +297,7 @@ mod tests {
         assert_eq!(regions.len(), 1);
         assert_eq!(regions[0].name, "fee-calculation");
         assert_eq!(regions[0].prose.len(), 1);
-        assert!(regions[0].prose[0]
-            .content
-            .contains("most-specific-match"));
+        assert!(regions[0].prose[0].content.contains("most-specific-match"));
     }
 
     #[test]
@@ -315,7 +313,7 @@ mod tests {
         let result = extract_regions(&np("/test.cpp"), &content, Some("//"));
         assert!(result.is_err());
         match result.unwrap_err() {
-            LifeError::NestedRegion { outer, inner, .. } => {
+            QuineError::NestedRegion { outer, inner, .. } => {
                 assert_eq!(outer, "outer");
                 assert_eq!(inner, "inner");
             }
@@ -338,7 +336,7 @@ mod tests {
         let result = extract_regions(&np("/test.cpp"), &content, Some("//"));
         assert!(result.is_err());
         match result.unwrap_err() {
-            LifeError::DuplicateRegion { name, .. } => {
+            QuineError::DuplicateRegion { name, .. } => {
                 assert_eq!(name, "handler");
             }
             e => panic!("expected DuplicateRegion, got {:?}", e),
