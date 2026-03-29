@@ -32,11 +32,11 @@ pub struct CollectReport {
 }
 
 /// Run the collect pipeline: walk from seed, diff, extract, store.
-pub fn run(seed: &Path, db_path: &Path) -> Result<CollectReport> {
+pub fn run(seed: &Path, db_path: &Path, verbose: bool) -> Result<CollectReport> {
     let db = Db::open(db_path)?;
 
     // ---- Phase 1: Walk ----
-    let walk_result = walk::walk_seed(seed)?;
+    let walk_result = walk::walk_seed(seed, verbose)?;
 
     let mut total_warnings = walk_result.warnings.len();
     for w in &walk_result.warnings {

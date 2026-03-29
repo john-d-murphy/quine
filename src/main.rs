@@ -25,6 +25,10 @@ enum Commands {
         /// Path to the database file.
         #[arg(long, default_value = "quine.db")]
         db: PathBuf,
+
+        /// Print progress during collection.
+        #[arg(short, long)]
+        verbose: bool,
     },
 
     /// Search the graph for nodes matching a query. Prints paths to stdout.
@@ -73,7 +77,7 @@ fn main() {
     let cli = Cli::parse();
 
     let result = match cli.command {
-        Commands::Collect { seed, db } => cmd_collect(&seed, &db),
+        Commands::Collect { seed, db, verbose } => cmd_collect(&seed, &db, verbose),
         Commands::Find { query, db } => cmd_find(&query, &db),
         Commands::Init { dir, name } => cmd_init(&dir, name),
         Commands::Stop { dir } => cmd_stop(&dir),
@@ -87,8 +91,8 @@ fn main() {
     }
 }
 
-fn cmd_collect(seed: &Path, db: &Path) -> errors::Result<()> {
-    let report = commands::collect::run(seed, db)?;
+fn cmd_collect(seed: &Path, db: &Path, verbose: bool) -> errors::Result<()> {
+    let report = commands::collect::run(seed, db, verbose)?;
     println!("collect complete:");
     println!("  roots discovered: {}", report.roots_discovered);
     println!("  files added:      {}", report.files_added);

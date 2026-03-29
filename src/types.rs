@@ -190,12 +190,26 @@ pub struct DefinitionFile {
     pub refs: Vec<RefEntry>,
     #[serde(default)]
     pub exclude: Vec<String>,
+    /// If false, this root is a hub — it only follows refs, no subtree walk.
+    #[serde(default = "default_true")]
+    pub walk: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// A ref entry in quine.yaml.
+///
+/// If `name` is present, the ref is an inline definition — no quine.yaml
+/// is needed in the target directory. This lets you index third-party
+/// repos without leaving fingerprints in them.
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct RefEntry {
     pub path: String,
+    pub name: Option<String>,
+    #[serde(default)]
+    pub exclude: Vec<String>,
 }
 // @end discovery-types
 

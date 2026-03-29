@@ -26,7 +26,7 @@ pub struct WalkResult {
 
 /// Walk from a seed directory, discovering all roots and files.
 /// The seed path can be relative — it will be resolved against cwd.
-pub fn walk_seed(seed: &Path) -> Result<WalkResult> {
+pub fn walk_seed(seed: &Path, verbose: bool) -> Result<WalkResult> {
     let seed_path = NodePath::from_cwd(seed).ok_or_else(|| {
         QuineError::Io(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
@@ -48,6 +48,7 @@ pub fn walk_seed(seed: &Path) -> Result<WalkResult> {
         &mut result,
         &mut seen_inodes,
         &mut visited_roots,
+        verbose,
     )?;
 
     Ok(result)
@@ -60,6 +61,11 @@ pub fn walk_seed(seed: &Path) -> Result<WalkResult> {
 //| then follows refs to discover other roots. Refs are discovery,
 //| not permission — they expand the scope of what's known.
 //|
+//| Refs can also carry inline definitions (name + exclude). This
+//| lets you index third-party repos without dropping a quine.yaml
+//| into them — the definition lives in the observer's seed config,
+//| not in the observed repo.
+//|
 //| Cycle detection uses a visited set of NodePaths. If the discovery
 //| tree has A -> B -> A, the second visit to A is a no-op.
 
@@ -69,6 +75,7 @@ fn walk_root(
     result: &mut WalkResult,
     seen_inodes: &mut HashSet<u64>,
     visited_roots: &mut HashSet<NodePath>,
+    verbose: bool,
 ) -> Result<()> {
     // Prevent cycles in the discovery tree.
     if visited_roots.contains(root_path) {
@@ -89,6 +96,14 @@ fn walk_root(
             path: def_file_path.display().to_string(),
             msg: e.to_string(),
         })?;
+
+    if verbose {
+        if def.walk {
+            eprintln!("root: {} ({})", def.name, root_path);
+        } else {
+            eprintln!("hub:  {} ({})", def.name, root_path);
+        }
+    }
 
     // Build the Root, expanding ~ in ref paths.
     let refs: Vec<NodePath> = def
@@ -111,18 +126,25 @@ fn walk_root(
         .filter_map(|e| glob::Pattern::new(e).ok())
         .collect();
 
-    // Walk the subtree.
-    walk_subtree(
-        root_path,
-        root_path,
-        &exclude_patterns,
-        result,
-        seen_inodes,
-        visited_roots,
-    )?;
+    // Walk the subtree (unless this root is a hub).
+    if def.walk {
+        walk_subtree(
+            root_path,
+            root_path,
+            &exclude_patterns,
+            result,
+            seen_inodes,
+            visited_roots,
+            verbose,
+        )?;
+    }
 
     // Follow refs to other roots.
-    for ref_path in &refs {
+    for ref_entry in &def.refs {
+        let ref_path = match NodePath::new(&ref_entry.path) {
+            Some(p) => p,
+            None => continue,
+        };
         let ref_dir = ref_path.as_path();
         if !ref_dir.exists() {
             result.warnings.push(QuineWarning::DanglingRef {
@@ -132,16 +154,76 @@ fn walk_root(
             continue;
         }
 
-        let ref_def = ref_dir.join(DEFINITION_FILE);
-        if ref_def.exists() {
-            walk_root(ref_path, result, seen_inodes, visited_roots)?;
+        if ref_entry.name.is_some() {
+            // Inline definition — no quine.yaml needed in the target.
+            walk_root_inline(
+                &ref_path,
+                ref_entry,
+                result,
+                seen_inodes,
+                visited_roots,
+                verbose,
+            )?;
         } else {
-            result.warnings.push(QuineWarning::DanglingRef {
-                from: root_path.clone(),
-                to: ref_path.clone(),
-            });
+            // File-based definition — look for quine.yaml.
+            let ref_def = ref_dir.join(DEFINITION_FILE);
+            if ref_def.exists() {
+                walk_root(&ref_path, result, seen_inodes, visited_roots, verbose)?;
+            } else {
+                result.warnings.push(QuineWarning::DanglingRef {
+                    from: root_path.clone(),
+                    to: ref_path.clone(),
+                });
+            }
         }
     }
+
+    Ok(())
+}
+
+/// Walk a root defined inline by a ref entry (no quine.yaml on disk).
+/// Used for third-party repos where you don't want to leave fingerprints.
+fn walk_root_inline(
+    root_path: &NodePath,
+    ref_entry: &RefEntry,
+    result: &mut WalkResult,
+    seen_inodes: &mut HashSet<u64>,
+    visited_roots: &mut HashSet<NodePath>,
+    verbose: bool,
+) -> Result<()> {
+    if visited_roots.contains(root_path) {
+        return Ok(());
+    }
+    visited_roots.insert(root_path.clone());
+
+    let name = ref_entry.name.clone().unwrap_or_default();
+
+    if verbose {
+        eprintln!("root: {} ({}) [inline]", name, root_path);
+    }
+
+    let root = Root {
+        path: root_path.clone(),
+        name,
+        refs: vec![],
+    };
+    result.roots.push(root);
+
+    let exclude_patterns: Vec<glob::Pattern> = ref_entry
+        .exclude
+        .iter()
+        .filter_map(|e| glob::Pattern::new(e).ok())
+        .collect();
+
+    walk_subtree(
+        root_path,
+        root_path,
+        &exclude_patterns,
+        result,
+        seen_inodes,
+        visited_roots,
+        verbose,
+    )?;
 
     Ok(())
 }
@@ -173,6 +255,7 @@ fn walk_subtree(
     result: &mut WalkResult,
     seen_inodes: &mut HashSet<u64>,
     visited_roots: &mut HashSet<NodePath>,
+    verbose: bool,
 ) -> Result<()> {
     let dir_path = dir.as_path();
 
@@ -224,7 +307,7 @@ fn walk_subtree(
             if entry_path.join(DEFINITION_FILE).exists() {
                 if let Some(sub_root) = NodePath::new(&entry_path) {
                     if !visited_roots.contains(&sub_root) {
-                        walk_root(&sub_root, result, seen_inodes, visited_roots)?;
+                        walk_root(&sub_root, result, seen_inodes, visited_roots, verbose)?;
                     }
                 }
                 // Don't descend — the sub-root owns this subtree.
@@ -240,6 +323,7 @@ fn walk_subtree(
                     result,
                     seen_inodes,
                     visited_roots,
+                    verbose,
                 )?;
             }
         } else if metadata.is_file() {
@@ -377,7 +461,7 @@ mod tests {
     #[test]
     fn walk_discovers_files() {
         let dir = setup_test_dir();
-        let result = walk_seed(dir.path()).unwrap();
+        let result = walk_seed(dir.path(), false).unwrap();
 
         assert_eq!(result.roots.len(), 1);
         assert_eq!(result.roots[0].name, "test-root");
@@ -399,7 +483,7 @@ mod tests {
         let dir = setup_test_dir();
         fs::write(dir.path().join("sub/.quine-stop"), "").unwrap();
 
-        let result = walk_seed(dir.path()).unwrap();
+        let result = walk_seed(dir.path(), false).unwrap();
 
         let names: Vec<&str> = result
             .files
@@ -412,7 +496,7 @@ mod tests {
     #[test]
     fn walk_fails_without_seed() {
         let dir = tempfile::tempdir().unwrap();
-        let result = walk_seed(dir.path());
+        let result = walk_seed(dir.path(), false);
         assert!(result.is_err());
     }
 
@@ -425,7 +509,7 @@ mod tests {
         )
         .unwrap();
 
-        let result = walk_seed(dir.path()).unwrap();
+        let result = walk_seed(dir.path(), false).unwrap();
         assert_eq!(result.warnings.len(), 1);
         assert!(matches!(
             &result.warnings[0],
@@ -445,7 +529,7 @@ mod tests {
         .unwrap();
         fs::write(dir.path().join("subroot/file.md"), "Sub-root file.\n").unwrap();
 
-        let result = walk_seed(dir.path()).unwrap();
+        let result = walk_seed(dir.path(), false).unwrap();
 
         assert_eq!(result.roots.len(), 2);
         let names: Vec<&str> = result.roots.iter().map(|r| r.name.as_str()).collect();
@@ -465,7 +549,7 @@ mod tests {
         .unwrap();
         fs::write(dir.path().join("subroot/file.md"), "Sub-root file.\n").unwrap();
 
-        let result = walk_seed(dir.path()).unwrap();
+        let result = walk_seed(dir.path(), false).unwrap();
 
         // Find the subroot file and check its owning root.
         let sub_file = result
@@ -540,7 +624,7 @@ mod tests {
         .unwrap();
         fs::write(dir1.path().join("local.md"), "Local file.\n").unwrap();
 
-        let result = walk_seed(dir1.path()).unwrap();
+        let result = walk_seed(dir1.path(), false).unwrap();
 
         assert_eq!(result.roots.len(), 2);
         let names: Vec<&str> = result.roots.iter().map(|r| r.name.as_str()).collect();
@@ -567,7 +651,7 @@ mod tests {
         fs::create_dir(dir.path().join(".git")).unwrap();
         fs::write(dir.path().join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
 
-        let result = walk_seed(dir.path()).unwrap();
+        let result = walk_seed(dir.path(), false).unwrap();
 
         let names: Vec<&str> = result
             .files
@@ -585,7 +669,7 @@ mod tests {
         fs::write(dir.path().join("quine.db-shm"), "shm").unwrap();
         fs::write(dir.path().join("quine.db-wal"), "wal").unwrap();
 
-        let result = walk_seed(dir.path()).unwrap();
+        let result = walk_seed(dir.path(), false).unwrap();
 
         let names: Vec<&str> = result
             .files
@@ -616,7 +700,7 @@ mod tests {
         fs::create_dir(dir.path().join("src")).unwrap();
         fs::write(dir.path().join("src/main.rs"), "fn main() {}").unwrap();
 
-        let result = walk_seed(dir.path()).unwrap();
+        let result = walk_seed(dir.path(), false).unwrap();
 
         let names: Vec<&str> = result
             .files
@@ -629,5 +713,51 @@ mod tests {
         assert!(!names.contains(&"output.bin"));
         // Glob file exclude
         assert!(!names.contains(&"data.bin"));
+    }
+
+    #[test]
+    fn walk_inline_ref_no_quine_yaml_needed() {
+        // Seed dir has quine.yaml with an inline-defined ref.
+        let seed = tempfile::tempdir().unwrap();
+        let third_party = tempfile::tempdir().unwrap();
+
+        // The third-party dir has NO quine.yaml.
+        fs::write(third_party.path().join("lib.rs"), "pub fn hello() {}").unwrap();
+        fs::create_dir(third_party.path().join("build")).unwrap();
+        fs::write(third_party.path().join("build/out.o"), "binary").unwrap();
+
+        // Seed refs the third-party dir with inline definition.
+        let seed_yaml = format!(
+            "name: \"seed\"\nrefs:\n  - path: \"{}\"\n    name: \"thirdparty\"\n    exclude:\n      - build\n",
+            third_party.path().display()
+        );
+        fs::write(seed.path().join("quine.yaml"), seed_yaml).unwrap();
+        fs::write(seed.path().join("notes.md"), "My notes.").unwrap();
+
+        let result = walk_seed(seed.path(), false).unwrap();
+
+        // Should discover both roots.
+        assert_eq!(result.roots.len(), 2);
+        let root_names: Vec<&str> = result.roots.iter().map(|r| r.name.as_str()).collect();
+        assert!(root_names.contains(&"seed"));
+        assert!(root_names.contains(&"thirdparty"));
+
+        // Should have files from both, but not the excluded build dir.
+        let file_names: Vec<&str> = result
+            .files
+            .iter()
+            .map(|f| f.path.as_path().file_name().unwrap().to_str().unwrap())
+            .collect();
+        assert!(file_names.contains(&"notes.md"));
+        assert!(file_names.contains(&"lib.rs"));
+        assert!(!file_names.contains(&"out.o"));
+
+        // No warnings — inline ref should not produce DanglingRef.
+        let dangling: Vec<_> = result
+            .warnings
+            .iter()
+            .filter(|w| matches!(w, QuineWarning::DanglingRef { .. }))
+            .collect();
+        assert!(dangling.is_empty());
     }
 }
