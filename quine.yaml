@@ -1,2 +1,4 @@
 name: "quine-source"
 refs: []
+exclude:
+  - target

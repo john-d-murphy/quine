@@ -178,7 +178,7 @@ pub struct Extracted {
 pub struct WalkDiff {
     pub added: Vec<WalkedFile>,
     pub removed: Vec<NodePath>,
-    pub changed: Vec<WalkedFile>, // hash differs from DB
+    pub changed: Vec<WalkedFile>,  // hash differs from DB
     pub unchanged: Vec<NodePath>,
 }
 
@@ -188,6 +188,8 @@ pub struct DefinitionFile {
     pub name: String,
     #[serde(default)]
     pub refs: Vec<RefEntry>,
+    #[serde(default)]
+    pub exclude: Vec<String>,
 }
 
 /// A ref entry in quine.yaml.

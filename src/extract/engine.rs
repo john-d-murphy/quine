@@ -40,9 +40,7 @@ pub fn extract(
         }
 
         if let Some((ref open, ref close)) = def.block_comment {
-            all_links.extend(links::extract_links_from_block_comments(
-                content, open, close,
-            ));
+            all_links.extend(links::extract_links_from_block_comments(content, open, close));
         }
 
         dedup_links(all_links)
@@ -145,11 +143,11 @@ Also related: [[~/music/supercollider/ovalprocess/main.scd#granular-voice]]
                 .as_str()
                 .to_string()
         );
+        assert_eq!(result.edges[1].target, NodePath::new("~/notes/other.md").unwrap());
         assert_eq!(
-            result.edges[1].target,
-            NodePath::new("~/notes/other.md").unwrap()
+            result.edges[2].fragment,
+            Some("granular-voice".to_string())
         );
-        assert_eq!(result.edges[2].fragment, Some("granular-voice".to_string()));
     }
 
     #[test]
@@ -188,7 +186,10 @@ def calculate():
 "#;
         let result = extract(&file, content, &python_def()).unwrap();
         assert_eq!(result.edges.len(), 2);
-        assert!(result.edges[0].target.as_str().ends_with("billing.md"));
+        assert!(result.edges[0]
+            .target
+            .as_str()
+            .ends_with("billing.md"));
         assert_eq!(
             result.edges[1].fragment,
             Some("fee-calculation".to_string())

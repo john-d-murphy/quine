@@ -289,7 +289,9 @@ mod tests {
         assert_eq!(regions.len(), 1);
         assert_eq!(regions[0].name, "fee-calculation");
         assert_eq!(regions[0].prose.len(), 1);
-        assert!(regions[0].prose[0].content.contains("most-specific-match"));
+        assert!(regions[0].prose[0]
+            .content
+            .contains("most-specific-match"));
     }
 
     #[test]
