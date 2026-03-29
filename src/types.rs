@@ -178,7 +178,7 @@ pub struct Extracted {
 pub struct WalkDiff {
     pub added: Vec<WalkedFile>,
     pub removed: Vec<NodePath>,
-    pub changed: Vec<WalkedFile>,  // hash differs from DB
+    pub changed: Vec<WalkedFile>, // hash differs from DB
     pub unchanged: Vec<NodePath>,
 }
 

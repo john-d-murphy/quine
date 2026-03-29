@@ -71,7 +71,11 @@ pub fn extract_links(text: &str) -> Vec<RawLink> {
                                 let f = inner[hash_pos + 1..].trim();
                                 (
                                     p.to_string(),
-                                    if f.is_empty() { None } else { Some(f.to_string()) },
+                                    if f.is_empty() {
+                                        None
+                                    } else {
+                                        Some(f.to_string())
+                                    },
                                 )
                             }
                             None => (inner.to_string(), None),
@@ -148,11 +152,7 @@ pub fn extract_links_from_comments(text: &str, line_comment: &str) -> Vec<RawLin
 ///
 /// Given text and block comment delimiters (e.g. "/*" and "*/"),
 /// extract `[[...]]` links only from within block comments.
-pub fn extract_links_from_block_comments(
-    text: &str,
-    open: &str,
-    close: &str,
-) -> Vec<RawLink> {
+pub fn extract_links_from_block_comments(text: &str, open: &str, close: &str) -> Vec<RawLink> {
     let mut links = Vec::new();
     let mut in_block = false;
     let mut block_lines: Vec<(usize, &str)> = Vec::new();

@@ -12,11 +12,23 @@ impl Db {
         )?;
 
         for file in &diff.added {
-            stmt.execute(rusqlite::params![now, "added", "node", file.path.as_str(), None::<String>])?;
+            stmt.execute(rusqlite::params![
+                now,
+                "added",
+                "node",
+                file.path.as_str(),
+                None::<String>
+            ])?;
         }
 
         for path in &diff.removed {
-            stmt.execute(rusqlite::params![now, "removed", "node", path.as_str(), None::<String>])?;
+            stmt.execute(rusqlite::params![
+                now,
+                "removed",
+                "node",
+                path.as_str(),
+                None::<String>
+            ])?;
         }
 
         Ok(())
@@ -36,11 +48,23 @@ impl Db {
         )?;
 
         for (from, to) in added_edges {
-            stmt.execute(rusqlite::params![now, "added", "edge", from.as_str(), Some(to.as_str())])?;
+            stmt.execute(rusqlite::params![
+                now,
+                "added",
+                "edge",
+                from.as_str(),
+                Some(to.as_str())
+            ])?;
         }
 
         for (from, to) in removed_edges {
-            stmt.execute(rusqlite::params![now, "removed", "edge", from.as_str(), Some(to.as_str())])?;
+            stmt.execute(rusqlite::params![
+                now,
+                "removed",
+                "edge",
+                from.as_str(),
+                Some(to.as_str())
+            ])?;
         }
 
         Ok(())

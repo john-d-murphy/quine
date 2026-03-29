@@ -43,7 +43,12 @@ pub fn walk_seed(seed: &Path) -> Result<WalkResult> {
     let mut seen_inodes: HashSet<u64> = HashSet::new();
     let mut visited_roots: HashSet<NodePath> = HashSet::new();
 
-    walk_root(&seed_path, &mut result, &mut seen_inodes, &mut visited_roots)?;
+    walk_root(
+        &seed_path,
+        &mut result,
+        &mut seen_inodes,
+        &mut visited_roots,
+    )?;
 
     Ok(result)
 }
@@ -79,12 +84,11 @@ fn walk_root(
             format!("reading {}: {}", def_file_path.display(), e),
         ))
     })?;
-    let def: DefinitionFile = serde_yaml::from_str(&def_content).map_err(|e| {
-        QuineError::YamlParse {
+    let def: DefinitionFile =
+        serde_yaml::from_str(&def_content).map_err(|e| QuineError::YamlParse {
             path: def_file_path.display().to_string(),
             msg: e.to_string(),
-        }
-    })?;
+        })?;
 
     // Build the Root, expanding ~ in ref paths.
     let refs: Vec<NodePath> = def
@@ -108,7 +112,14 @@ fn walk_root(
         .collect();
 
     // Walk the subtree.
-    walk_subtree(root_path, root_path, &exclude_patterns, result, seen_inodes, visited_roots)?;
+    walk_subtree(
+        root_path,
+        root_path,
+        &exclude_patterns,
+        result,
+        seen_inodes,
+        visited_roots,
+    )?;
 
     // Follow refs to other roots.
     for ref_path in &refs {
@@ -222,7 +233,14 @@ fn walk_subtree(
 
             // Regular directory — descend.
             if let Some(sub_dir) = NodePath::new(&entry_path) {
-                walk_subtree(&sub_dir, owning_root, exclude, result, seen_inodes, visited_roots)?;
+                walk_subtree(
+                    &sub_dir,
+                    owning_root,
+                    exclude,
+                    result,
+                    seen_inodes,
+                    visited_roots,
+                )?;
             }
         } else if metadata.is_file() {
             let file_name = entry.file_name();
@@ -522,8 +540,14 @@ mod tests {
         assert!(names.contains(&"external"));
 
         // Should have files from both roots.
-        let has_local = result.files.iter().any(|f| f.path.as_str().ends_with("local.md"));
-        let has_data = result.files.iter().any(|f| f.path.as_str().ends_with("data.md"));
+        let has_local = result
+            .files
+            .iter()
+            .any(|f| f.path.as_str().ends_with("local.md"));
+        let has_data = result
+            .files
+            .iter()
+            .any(|f| f.path.as_str().ends_with("data.md"));
         assert!(has_local);
         assert!(has_data);
     }
