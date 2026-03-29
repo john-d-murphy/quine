@@ -1,0 +1,459 @@
+#!/usr/bin/env python3
+"""quine-weave — stitch a markdown document with code from the quine graph.
+
+Reads a markdown file containing {{directives}} that reference regions
+in the quine graph DB. Expands the directives with prose and code from
+the source, then renders the result as a PDF.
+
+Usage:
+    quine-weave <db> <markdown> <output.pdf>
+    quine-weave -h | --help
+
+Directives:
+    {{prose:region-name}}    Insert the //| prose from a region.
+    {{code:region-name}}     Insert the code (markers stripped) as a fenced block.
+    {{region:region-name}}   Insert both: prose paragraph, then code block.
+    {{stats}}                Insert graph summary (files, edges, regions).
+    {{index}}                Insert the region index as a table.
+"""
+
+import os
+import re
+import sqlite3
+import sys
+from datetime import datetime
+
+from reportlab.lib.pagesizes import letter
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.colors import HexColor
+from reportlab.lib.units import inch
+from reportlab.lib.enums import TA_LEFT, TA_CENTER, TA_JUSTIFY
+from reportlab.platypus import (
+    SimpleDocTemplate, Paragraph, Spacer, PageBreak,
+    Table, TableStyle, HRFlowable, Preformatted, KeepTogether,
+)
+
+
+# ---- DB helpers ----
+
+def get_region(conn, name):
+    """Get full region data: file, start_line, end_line, prose."""
+    row = conn.execute(
+        "SELECT file, start_line, end_line, prose FROM regions WHERE name = ?",
+        (name,)
+    ).fetchone()
+    if not row:
+        return None
+    return {
+        'file': row[0],
+        'start_line': row[1],
+        'end_line': row[2],
+        'prose': row[3].strip() if row[3] else None,
+    }
+
+
+def get_stats(conn):
+    nodes = conn.execute("SELECT COUNT(*) FROM nodes").fetchone()[0]
+    edges = conn.execute("SELECT COUNT(*) FROM edges").fetchone()[0]
+    regions = conn.execute("SELECT COUNT(*) FROM regions").fetchone()[0]
+    prose_count = conn.execute(
+        "SELECT COUNT(*) FROM regions WHERE prose IS NOT NULL AND prose != ''"
+    ).fetchone()[0]
+    return nodes, edges, regions, prose_count
+
+
+def get_all_regions(conn):
+    return conn.execute('''
+        SELECT file, name, start_line, end_line, LENGTH(prose) as prose_len
+        FROM regions ORDER BY file, start_line
+    ''').fetchall()
+
+
+def short_path(path):
+    if '/src/' in path:
+        return path.split('/src/')[-1]
+    return path.split('/')[-1]
+
+
+# ---- Source code reading ----
+
+# Extension to language name for code fences
+LANG_MAP = {
+    '.rs': 'rust', '.py': 'python', '.cpp': 'cpp', '.c': 'c',
+    '.h': 'c', '.hpp': 'cpp', '.scd': 'supercollider',
+    '.js': 'javascript', '.ts': 'typescript', '.sh': 'bash',
+    '.lua': 'lua', '.yaml': 'yaml', '.yml': 'yaml',
+}
+
+
+def read_region_code(region):
+    """Read source file and extract the code for a region, stripping markers."""
+    filepath = region['file']
+    start = region['start_line']
+    end = region['end_line']
+
+    try:
+        with open(filepath, 'r') as f:
+            all_lines = f.readlines()
+    except FileNotFoundError:
+        return None, ''
+
+    ext = os.path.splitext(filepath)[1].lower()
+    lang = LANG_MAP.get(ext, '')
+
+    code_lines = []
+    for i in range(start - 1, min(end, len(all_lines))):
+        line = all_lines[i]
+        stripped = line.strip()
+        # Skip region markers
+        if '@region ' in stripped or '@end ' in stripped:
+            continue
+        # Skip prose lines
+        if stripped.startswith('//|') or stripped.startswith('#|'):
+            continue
+        code_lines.append(line.rstrip())
+
+    # Trim leading/trailing blanks
+    while code_lines and not code_lines[0].strip():
+        code_lines.pop(0)
+    while code_lines and not code_lines[-1].strip():
+        code_lines.pop()
+
+    return lang, '\n'.join(code_lines)
+
+
+# ---- Markdown parsing ----
+
+def parse_markdown(text):
+    """Parse markdown into a list of blocks.
+
+    Each block is a dict with 'type' and content:
+        {'type': 'h1', 'text': 'Title'}
+        {'type': 'h2', 'text': 'Section'}
+        {'type': 'h3', 'text': 'Subsection'}
+        {'type': 'para', 'text': 'paragraph text...'}
+        {'type': 'hr'}
+        {'type': 'directive', 'kind': 'region', 'arg': 'node-identity'}
+        {'type': 'code', 'lang': 'rust', 'text': 'fn main() {...}'}
+    """
+    blocks = []
+    lines = text.split('\n')
+    i = 0
+
+    while i < len(lines):
+        line = lines[i]
+        stripped = line.strip()
+
+        # Blank line — skip
+        if not stripped:
+            i += 1
+            continue
+
+        # Horizontal rule
+        if stripped in ('---', '***', '___') and len(stripped) >= 3:
+            blocks.append({'type': 'hr'})
+            i += 1
+            continue
+
+        # Headings
+        if stripped.startswith('# ') and not stripped.startswith('## '):
+            blocks.append({'type': 'h1', 'text': stripped[2:].strip()})
+            i += 1
+            continue
+        if stripped.startswith('## ') and not stripped.startswith('### '):
+            blocks.append({'type': 'h2', 'text': stripped[3:].strip()})
+            i += 1
+            continue
+        if stripped.startswith('### '):
+            blocks.append({'type': 'h3', 'text': stripped[4:].strip()})
+            i += 1
+            continue
+
+        # Fenced code block
+        if stripped.startswith('```'):
+            lang = stripped[3:].strip()
+            code_lines = []
+            i += 1
+            while i < len(lines) and not lines[i].strip().startswith('```'):
+                code_lines.append(lines[i])
+                i += 1
+            i += 1  # skip closing ```
+            blocks.append({'type': 'code', 'lang': lang, 'text': '\n'.join(code_lines)})
+            continue
+
+        # Directive (standalone line)
+        m = re.match(r'^\s*\{\{(\w+)(?::([^}]+))?\}\}\s*$', stripped)
+        if m:
+            blocks.append({'type': 'directive', 'kind': m.group(1), 'arg': m.group(2)})
+            i += 1
+            continue
+
+        # Paragraph — collect contiguous non-blank, non-special lines
+        para_lines = []
+        while i < len(lines):
+            l = lines[i].strip()
+            if not l:
+                break
+            if l.startswith('#') or l in ('---', '***', '___'):
+                break
+            if re.match(r'^\s*\{\{(\w+)(?::([^}]+))?\}\}\s*$', l):
+                break
+            if l.startswith('```'):
+                break
+            para_lines.append(l)
+            i += 1
+        if para_lines:
+            blocks.append({'type': 'para', 'text': ' '.join(para_lines)})
+        continue
+
+    return blocks
+
+
+# ---- PDF rendering ----
+
+def escape_xml(text):
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def inline_format(text):
+    """Convert inline markdown to reportlab XML: `code` and *italic* and **bold**."""
+    # Code spans
+    text = re.sub(r'`([^`]+)`', r'<font face="Courier" size="9">\1</font>', text)
+    # Bold
+    text = re.sub(r'\*\*([^*]+)\*\*', r'<b>\1</b>', text)
+    # Italic
+    text = re.sub(r'\*([^*]+)\*', r'<i>\1</i>', text)
+    return text
+
+
+def build_pdf(db_path, md_path, output_path):
+    conn = sqlite3.connect(db_path)
+
+    with open(md_path, 'r') as f:
+        md_text = f.read()
+
+    blocks = parse_markdown(md_text)
+
+    # ---- Styles ----
+    styles = getSampleStyleSheet()
+
+    s_title = ParagraphStyle('DocTitle', parent=styles['Title'],
+        fontSize=28, leading=34, spaceAfter=4, textColor=HexColor("#1a1a1a"))
+    s_h1 = ParagraphStyle('H1', parent=styles['Heading1'],
+        fontSize=18, leading=22, spaceBefore=20, spaceAfter=8,
+        textColor=HexColor("#1a1a1a"))
+    s_h2 = ParagraphStyle('H2', parent=styles['Heading2'],
+        fontSize=14, leading=18, spaceBefore=16, spaceAfter=6,
+        textColor=HexColor("#333333"))
+    s_h3 = ParagraphStyle('H3', parent=styles['Heading3'],
+        fontSize=12, leading=16, spaceBefore=12, spaceAfter=4,
+        textColor=HexColor("#444444"))
+    s_body = ParagraphStyle('Body', parent=styles['Normal'],
+        fontSize=10.5, leading=15, spaceAfter=8, alignment=TA_JUSTIFY,
+        textColor=HexColor("#1a1a1a"))
+    s_prose = ParagraphStyle('Prose', parent=styles['Normal'],
+        fontSize=10, leading=14, spaceAfter=6, alignment=TA_JUSTIFY,
+        textColor=HexColor("#2c3e50"), leftIndent=8,
+        borderColor=HexColor("#27ae60"), borderWidth=0,
+        borderPadding=0)
+    s_source = ParagraphStyle('SourceRef', parent=styles['Normal'],
+        fontSize=8, leading=10, textColor=HexColor("#999999"), spaceAfter=2)
+    s_code = ParagraphStyle('Code', parent=styles['Code'],
+        fontSize=8, leading=10.5, leftIndent=8, rightIndent=8,
+        spaceAfter=10, spaceBefore=4,
+        backColor=HexColor("#f5f5f5"),
+        borderColor=HexColor("#dddddd"), borderWidth=0.5, borderPadding=6,
+        textColor=HexColor("#333333"))
+    s_meta = ParagraphStyle('Meta', parent=styles['Normal'],
+        fontSize=9, leading=12, textColor=HexColor("#888888"),
+        alignment=TA_CENTER)
+    s_caption = ParagraphStyle('Caption', parent=styles['Normal'],
+        fontSize=8.5, leading=11, textColor=HexColor("#888888"),
+        alignment=TA_CENTER, spaceBefore=4, spaceAfter=12)
+
+    doc = SimpleDocTemplate(
+        output_path, pagesize=letter,
+        topMargin=0.8*inch, bottomMargin=0.8*inch,
+        leftMargin=1.0*inch, rightMargin=1.0*inch,
+    )
+
+    story = []
+    is_first_h1 = True
+
+    for block in blocks:
+        btype = block['type']
+
+        if btype == 'h1':
+            if is_first_h1:
+                # Title treatment
+                story.append(Spacer(1, 0.8*inch))
+                story.append(Paragraph(escape_xml(block['text']), s_title))
+                is_first_h1 = False
+            else:
+                story.append(Paragraph(escape_xml(block['text']), s_h1))
+
+        elif btype == 'h2':
+            story.append(Paragraph(escape_xml(block['text']), s_h2))
+
+        elif btype == 'h3':
+            story.append(Paragraph(escape_xml(block['text']), s_h3))
+
+        elif btype == 'para':
+            text = escape_xml(block['text'])
+            text = inline_format(text)
+            story.append(Paragraph(text, s_body))
+
+        elif btype == 'hr':
+            story.append(Spacer(1, 4))
+            story.append(HRFlowable(width="100%", thickness=0.5,
+                                    color=HexColor("#cccccc")))
+            story.append(Spacer(1, 4))
+
+        elif btype == 'code':
+            code_text = escape_xml(block['text'])
+            story.append(Preformatted(code_text, s_code))
+
+        elif btype == 'directive':
+            expand_directive(story, conn, block['kind'], block.get('arg'),
+                            s_prose, s_code, s_source, s_body, s_h3, s_meta)
+
+    # ---- Footer ----
+    story.append(Spacer(1, 0.3*inch))
+    story.append(HRFlowable(width="100%", thickness=0.5, color=HexColor("#cccccc")))
+    story.append(Spacer(1, 4))
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    story.append(Paragraph(
+        f"Generated {now} by <font face='Courier'>quine-weave</font> from "
+        f"<font face='Courier'>{os.path.basename(md_path)}</font> + "
+        f"<font face='Courier'>{os.path.basename(db_path)}</font>",
+        s_meta))
+
+    doc.build(story)
+    conn.close()
+    print(f"wrote {output_path}", file=sys.stderr)
+
+
+def expand_directive(story, conn, kind, arg, s_prose, s_code, s_source,
+                     s_body, s_h3, s_meta):
+    """Expand a {{directive}} into PDF flowables."""
+
+    if kind == 'stats':
+        nodes, edges, regions, prose_count = get_stats(conn)
+        story.append(Paragraph(
+            f"<b>{nodes}</b> files · <b>{edges}</b> edges · "
+            f"<b>{regions}</b> regions · <b>{prose_count}</b> with prose",
+            s_meta))
+        return
+
+    if kind == 'index':
+        expand_index(story, conn, s_source)
+        return
+
+    if kind not in ('prose', 'code', 'region'):
+        story.append(Paragraph(
+            f"<i>[unknown directive: {escape_xml(kind)}:{escape_xml(arg or '')}]</i>",
+            s_body))
+        return
+
+    if not arg:
+        story.append(Paragraph(
+            f"<i>[missing region name in {{{{{kind}}}}}]</i>", s_body))
+        return
+
+    region = get_region(conn, arg)
+    if not region:
+        story.append(Paragraph(
+            f"<i>[region not found: {escape_xml(arg)}]</i>", s_body))
+        return
+
+    sp = short_path(region['file'])
+
+    # Source reference
+    story.append(Paragraph(
+        f"<font face='Courier' size='8'>{sp}</font> · "
+        f"<font size='8'>lines {region['start_line']}–{region['end_line']}</font>",
+        s_source))
+
+    # Prose
+    if kind in ('prose', 'region') and region['prose']:
+        for para in region['prose'].split('\n\n'):
+            lines = para.strip().split('\n')
+            formatted = []
+            for line in lines:
+                line = line.strip()
+                if line.startswith('- '):
+                    formatted.append(f"  • {escape_xml(line[2:])}")
+                else:
+                    formatted.append(escape_xml(line))
+            text = ' '.join(formatted)
+            text = inline_format(text)
+            story.append(Paragraph(text, s_prose))
+
+    # Code
+    if kind in ('code', 'region'):
+        lang, code_text = read_region_code(region)
+        if code_text:
+            story.append(Preformatted(escape_xml(code_text), s_code))
+        elif kind == 'code':
+            story.append(Paragraph(
+                f"<i>[source file not found: {escape_xml(region['file'])}]</i>",
+                s_body))
+
+
+def expand_index(story, conn, s_source):
+    """Render the region index as a table."""
+    all_regions = get_all_regions(conn)
+
+    table_data = [["File", "Region", "Lines", "Prose"]]
+    for file, name, start, end, prose_len in all_regions:
+        fname = short_path(file)
+        prose_chars = f"{prose_len} ch" if prose_len else "—"
+        table_data.append([fname, name, f"{start}–{end}", prose_chars])
+
+    t = Table(table_data, colWidths=[1.8*inch, 1.8*inch, 0.7*inch, 0.7*inch])
+    t.setStyle(TableStyle([
+        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ('FONTSIZE', (0, 0), (-1, -1), 8),
+        ('LEADING', (0, 0), (-1, -1), 10),
+        ('TEXTCOLOR', (0, 0), (-1, 0), HexColor("#ffffff")),
+        ('BACKGROUND', (0, 0), (-1, 0), HexColor("#444444")),
+        ('ROWBACKGROUNDS', (0, 1), (-1, -1),
+         [HexColor("#fafafa"), HexColor("#f0f0f0")]),
+        ('GRID', (0, 0), (-1, -1), 0.5, HexColor("#dddddd")),
+        ('TOPPADDING', (0, 0), (-1, -1), 3),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
+        ('LEFTPADDING', (0, 0), (-1, -1), 5),
+        ('FONTNAME', (0, 1), (1, -1), 'Courier'),
+        ('FONTSIZE', (0, 1), (1, -1), 7.5),
+        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+    ]))
+    story.append(t)
+
+
+# ---- Main ----
+
+def usage():
+    print(__doc__.strip())
+    sys.exit(0)
+
+
+def main():
+    if len(sys.argv) < 4 or sys.argv[1] in ('-h', '--help'):
+        usage()
+
+    db_path = sys.argv[1]
+    md_path = sys.argv[2]
+    output_path = sys.argv[3]
+
+    if not os.path.exists(db_path):
+        print(f"error: database not found: {db_path}", file=sys.stderr)
+        sys.exit(1)
+    if not os.path.exists(md_path):
+        print(f"error: markdown file not found: {md_path}", file=sys.stderr)
+        sys.exit(1)
+
+    build_pdf(db_path, md_path, output_path)
+
+
+if __name__ == "__main__":
+    main()

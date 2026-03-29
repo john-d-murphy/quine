@@ -100,8 +100,15 @@ fn walk_root(
     };
     result.roots.push(root);
 
+    // Parse exclude patterns.
+    let exclude_patterns: Vec<glob::Pattern> = def
+        .exclude
+        .iter()
+        .filter_map(|e| glob::Pattern::new(e).ok())
+        .collect();
+
     // Walk the subtree.
-    walk_subtree(root_path, root_path, &def.exclude, result, seen_inodes, visited_roots)?;
+    walk_subtree(root_path, root_path, &exclude_patterns, result, seen_inodes, visited_roots)?;
 
     // Follow refs to other roots.
     for ref_path in &refs {
@@ -151,7 +158,7 @@ fn walk_root(
 fn walk_subtree(
     dir: &NodePath,
     owning_root: &NodePath,
-    exclude: &[String],
+    exclude: &[glob::Pattern],
     result: &mut WalkResult,
     seen_inodes: &mut HashSet<u64>,
     visited_roots: &mut HashSet<NodePath>,
@@ -186,8 +193,8 @@ fn walk_subtree(
                 continue;
             }
 
-            // Skip directories listed in exclude.
-            if exclude.iter().any(|e| e == dir_name_str.as_ref()) {
+            // Skip directories matching an exclude pattern.
+            if exclude.iter().any(|p| p.matches(&dir_name_str)) {
                 continue;
             }
 
@@ -218,6 +225,14 @@ fn walk_subtree(
                 walk_subtree(&sub_dir, owning_root, exclude, result, seen_inodes, visited_roots)?;
             }
         } else if metadata.is_file() {
+            let file_name = entry.file_name();
+            let file_name_str = file_name.to_string_lossy();
+
+            // Skip files matching an exclude pattern.
+            if exclude.iter().any(|p| p.matches(&file_name_str)) {
+                continue;
+            }
+
             if let Some(file_path) = NodePath::new(&entry_path) {
                 let hash = hash_file(&entry_path)?;
                 let walked = WalkedFile {
@@ -536,11 +551,12 @@ mod tests {
 
         fs::write(
             dir.path().join("quine.yaml"),
-            "name: \"test\"\nrefs: []\nexclude:\n  - build\n",
+            "name: \"test\"\nrefs: []\nexclude:\n  - build\n  - \"*.bin\"\n",
         )
         .unwrap();
 
         fs::write(dir.path().join("hello.md"), "# Hello\n").unwrap();
+        fs::write(dir.path().join("data.bin"), "binary stuff").unwrap();
 
         fs::create_dir(dir.path().join("build")).unwrap();
         fs::write(dir.path().join("build/output.bin"), "binary stuff").unwrap();
@@ -557,6 +573,9 @@ mod tests {
             .collect();
         assert!(names.contains(&"hello.md"));
         assert!(names.contains(&"main.rs"));
+        // Directory exclude
         assert!(!names.contains(&"output.bin"));
+        // Glob file exclude
+        assert!(!names.contains(&"data.bin"));
     }
 }

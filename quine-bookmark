@@ -1,0 +1,488 @@
+#!/usr/bin/env bash
+# quine-bookmark — newsboat bookmark-cmd script for quine.
+#
+# Called by newsboat with 4 args:
+#   $1 = URL
+#   $2 = Title
+#   $3 = Description
+#   $4 = Feed name
+#
+# Creates a markdown file in the web clips directory with:
+#   - Full frontmatter (title, url, feed, created, tags)
+#   - Feed description
+#   - Optionally, the full article text via readability-cli
+#   - Placeholder for your notes
+#
+# Tags are derived automatically from your newsboat urls file.
+# No manual mapping needed — the tags you already assigned to
+# feeds in newsboat flow through to the knowledge graph.
+
+set -Eeuo pipefail
+
+# ---- Help ----
+usage() {
+    cat <<'EOF'
+quine-bookmark — save a web article as a markdown file for quine.
+
+USAGE:
+  quine-bookmark <url> [title] [description] [feed_name]
+  quine-bookmark -h | --help
+
+ARGS:
+  url          Article URL (required).
+  title        Article title (default: "Untitled bookmark").
+  description  Article description/summary from the RSS feed.
+  feed_name    Name of the RSS feed (used for automatic tag lookup).
+
+NEWSBOAT INTEGRATION:
+  Newsboat calls this automatically with all 4 args when you press
+  Ctrl-B (bookmark). Add to ~/.newsboat/config:
+
+    bookmark-cmd "~/bin/collectors/quine-bookmark"
+    bookmark-autopilot yes
+
+  Tags are derived automatically from your newsboat urls file.
+  If your urls file has:
+
+    https://jvns.ca/atom.xml programming systems
+
+  Then bookmarking an article from Julia Evans will produce:
+
+    tags: ["programming", "systems"]
+
+  No manual tag mapping needed.
+
+MANUAL USE:
+  quine-bookmark "https://example.com/article" "Article Title"
+  quine-bookmark "https://example.com/article" "Title" "A summary." "Blog Name"
+  quine-bookmark -t "custom,tags" "https://example.com/article" "Title"
+
+ENVIRONMENT:
+  QUINE_WEB_DIR        Output directory (default: ~/Dropbox/notes/web).
+  QUINE_READABLE       Set to "1" to fetch full article text and metadata.
+                      Tries trafilatura first (pip install trafilatura),
+                      then pandoc, w3m, lynx (default: 0).
+                      When trafilatura is available, also extracts article
+                      author and publication date into frontmatter.
+  NEWSBOAT_URLS       Path to newsboat urls file
+                      (default: ~/.newsboat/urls, falls back to
+                       ~/.config/newsboat/urls).
+  NEWSBOAT_CACHE      Path to newsboat cache.db
+                      (default: ~/.newsboat/cache.db, falls back to
+                       ~/.config/newsboat/cache.db).
+
+OPTIONS:
+  -h, --help          Show this help.
+  -t <tags>           Override tags (comma-separated). Skips automatic
+                      tag lookup.
+  -e                  Open the file in $EDITOR after creation.
+  -r                  Fetch full article text (same as QUINE_READABLE=1).
+
+OUTPUT:
+  Creates a markdown file at:
+    $QUINE_WEB_DIR/YYYY/MM/DD/<timestamp>-<slug>.md
+
+  Prints the output file path to stdout.
+
+TAG DERIVATION:
+  1. If -t is given, those tags are used directly.
+  2. Otherwise, the feed name ($4) is matched against newsboat's
+     cache.db to find the feed URL.
+  3. That URL is looked up in the newsboat urls file to find its tags.
+  4. If any step fails, tags default to [].
+EOF
+}
+
+case "${1:-}" in
+    -h|--help)
+        usage
+        exit 0
+        ;;
+esac
+
+# ---- Config ----
+WEB_DIR="${QUINE_WEB_DIR:-$HOME/Dropbox/notes/web}"
+FETCH_READABLE="${QUINE_READABLE:-0}"
+
+# Find newsboat files.
+find_newsboat_file() {
+    local name="$1"
+    local custom_var="$2"
+
+    # Check environment override.
+    if [ -n "${!custom_var:-}" ]; then
+        echo "${!custom_var}"
+        return
+    fi
+
+    # Check standard locations.
+    for dir in "$HOME/.newsboat" "$HOME/.config/newsboat"; do
+        if [ -f "$dir/$name" ]; then
+            echo "$dir/$name"
+            return
+        fi
+    done
+
+    echo ""
+}
+
+URLS_FILE="$(find_newsboat_file "urls" "NEWSBOAT_URLS")"
+CACHE_FILE="$(find_newsboat_file "cache.db" "NEWSBOAT_CACHE")"
+
+# ---- Parse options ----
+MANUAL_TAGS=""
+EDIT_AFTER=0
+
+while getopts ":t:erh" opt; do
+    case "$opt" in
+        t) MANUAL_TAGS="$OPTARG" ;;
+        e) EDIT_AFTER=1 ;;
+        r) FETCH_READABLE=1 ;;
+        h) usage; exit 0 ;;
+        \?) ;; # Ignore unknown — newsboat might pass URL starting with -
+    esac
+done
+shift $((OPTIND-1))
+
+# ---- Args (positional, from newsboat) ----
+URL="${1:-}"
+TITLE="${2:-}"
+DESCRIPTION="${3:-}"
+FEED="${4:-}"
+
+if [ -z "$URL" ]; then
+    echo "quine-bookmark: no URL provided" >&2
+    echo "Try: quine-bookmark --help" >&2
+    exit 1
+fi
+
+# ---- Derive tags from newsboat ----
+#
+# Strategy:
+# 1. Query cache.db: feed name -> feed URL
+# 2. Parse urls file: feed URL -> tags
+#
+# The urls file format is:
+#   <url> [tag1] [tag2] ["multi word tag"] [~"Custom Name"]
+#
+# Tags starting with ~ are custom names, not real tags.
+# Tags starting with ! are hidden feeds, not real tags.
+
+lookup_tags_from_newsboat() {
+    local feed_name="$1"
+
+    # Need both files.
+    if [ -z "$URLS_FILE" ] || [ -z "$CACHE_FILE" ]; then
+        return
+    fi
+
+    if [ ! -f "$URLS_FILE" ] || [ ! -f "$CACHE_FILE" ]; then
+        return
+    fi
+
+    # Step 1: Find the feed URL from cache.db using the feed name.
+    # Use python3 for the SQLite query (more portable than sqlite3 CLI).
+    local feed_url
+    feed_url="$(python3 -c "
+import sqlite3, sys
+try:
+    conn = sqlite3.connect('$CACHE_FILE')
+    row = conn.execute(
+        'SELECT rssurl FROM rss_feed WHERE title = ? LIMIT 1',
+        (sys.argv[1],)
+    ).fetchone()
+    if row: print(row[0])
+except: pass
+" "$feed_name" 2>/dev/null || true)"
+
+    if [ -z "$feed_url" ]; then
+        return
+    fi
+
+    # Step 2: Find the line in the urls file that starts with this URL
+    # and extract the tags.
+    local line
+    line="$(grep -F "$feed_url" "$URLS_FILE" | head -1 || true)"
+
+    if [ -z "$line" ]; then
+        return
+    fi
+
+    # Parse tags from the line. Everything after the URL is tags.
+    # Skip: lines starting with "query:", tags starting with ~ or !
+    if [[ "$line" == "query:"* ]]; then
+        return
+    fi
+
+    parse_tags_from_line "$line" "$feed_url"
+}
+
+parse_tags_from_line() {
+    local line="$1"
+    local feed_url="$2"
+
+    # Remove the URL from the beginning of the line.
+    local rest="${line#"$feed_url"}"
+    rest="$(echo "$rest" | sed 's/^[[:space:]]*//')"
+
+    if [ -z "$rest" ]; then
+        return
+    fi
+
+    # Parse space-separated tokens, respecting quotes.
+    # Skip tokens starting with ~ (custom name) or ! (hidden).
+    local tags=()
+    local in_quote=0
+    local token=""
+
+    while IFS= read -rn1 char; do
+        if [ "$char" = '"' ]; then
+            if [ "$in_quote" -eq 1 ]; then
+                in_quote=0
+                # End of quoted token.
+                if [[ "$token" != ~* ]] && [[ "$token" != !* ]]; then
+                    tags+=("$token")
+                fi
+                token=""
+            else
+                in_quote=1
+                token=""
+            fi
+        elif [ "$char" = ' ' ] || [ "$char" = "$(printf '\t')" ]; then
+            if [ "$in_quote" -eq 1 ]; then
+                token+="$char"
+            elif [ -n "$token" ]; then
+                # End of unquoted token.
+                if [[ "$token" != ~* ]] && [[ "$token" != !* ]] && [[ "$token" != "#"* ]]; then
+                    tags+=("$token")
+                fi
+                token=""
+            fi
+        elif [ -n "$char" ]; then
+            token+="$char"
+        fi
+    done <<< "$rest"
+
+    # Flush last token.
+    if [ -n "$token" ] && [ "$in_quote" -eq 0 ]; then
+        if [[ "$token" != ~* ]] && [[ "$token" != !* ]] && [[ "$token" != "#"* ]]; then
+            tags+=("$token")
+        fi
+    fi
+
+    # Output as comma-separated.
+    local IFS=","
+    echo "${tags[*]}"
+}
+
+# Resolve tags.
+if [ -n "$MANUAL_TAGS" ]; then
+    TAGS="$MANUAL_TAGS"
+elif [ -n "$FEED" ]; then
+    TAGS="$(lookup_tags_from_newsboat "$FEED")"
+else
+    TAGS=""
+fi
+
+# ---- Metadata ----
+CREATED="$(date +"%Y-%m-%dT%H:%M:%S%z" | sed -E 's/([+-][0-9]{2})([0-9]{2})$/\1:\2/')"
+DATE_PATH="$(date +%Y/%m/%d)"
+STAMP="$(date +%Y%m%d-%H%M%S)"
+
+if [ -z "$TITLE" ]; then
+    TITLE="Untitled bookmark"
+fi
+
+SLUG="$(printf '%s' "$TITLE" \
+    | tr '[:upper:]' '[:lower:]' \
+    | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//; s/-+/-/g' \
+    | head -c 80)"
+
+# Format tags as YAML list: ["tag1", "tag2"]
+format_tags_yaml() {
+    local raw="$1"
+    if [ -z "$raw" ]; then
+        echo "[]"
+        return
+    fi
+    echo "$raw" | awk -v RS=',' '{
+        gsub(/^[[:space:]]+|[[:space:]]+$/, "")
+        if (NR > 1) printf ", "
+        printf "\"%s\"", $0
+    }' | sed 's/^/[/; s/$/]/'
+}
+
+TAGS_YAML="$(format_tags_yaml "$TAGS")"
+
+# ---- Fetch readable content (optional) ----
+#
+# Tries these methods in order:
+#   1. trafilatura (best: fetches + extracts article, strips nav/ads)
+#      pip install trafilatura
+#   2. curl + pandoc (decent: converts raw HTML to markdown, includes everything)
+#   3. curl + w3m/lynx (okay: renders full page as text)
+#
+# All methods suppress errors gracefully. If nothing works, the
+# bookmark is still created — just without the article body.
+
+fetch_readable() {
+    local url="$1"
+
+    # Method 1: trafilatura with metadata (best option)
+    # Extracts article text AND metadata (author, date, categories).
+    # Outputs to two temp files: body and metadata JSON.
+    if python3 -c "import trafilatura" 2>/dev/null; then
+        local result
+        result="$(python3 -c "
+import sys, json
+from trafilatura import fetch_url, bare_extraction
+
+downloaded = fetch_url(sys.argv[1])
+if downloaded:
+    data = bare_extraction(downloaded, include_comments=False, include_tables=True)
+    if data and data.get('text'):
+        out = {'text': data['text']}
+        if data.get('author'): out['author'] = data['author']
+        if data.get('date'): out['date'] = data['date']
+        if data.get('categories'): out['categories'] = data['categories']
+        if data.get('sitename'): out['sitename'] = data['sitename']
+        if data.get('description'): out['description'] = data['description']
+        print(json.dumps(out))
+" "$url" 2>/dev/null || true)"
+        if [ -n "$result" ]; then
+            echo "$result"
+            return
+        fi
+    fi
+
+    # Methods 2-4 need the HTML fetched by curl.
+    local html
+    html="$(curl -sL --max-time 15 \
+        -A 'Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0' \
+        "$url" 2>/dev/null || true)"
+
+    if [ -z "$html" ]; then
+        return
+    fi
+
+    # Method 2: trafilatura on pre-fetched HTML (if fetch_url failed
+    # but curl succeeded — different HTTP stacks sometimes differ)
+    if python3 -c "import trafilatura" 2>/dev/null; then
+        local result
+        result="$(python3 -c "
+import sys, json
+from trafilatura import bare_extraction
+
+data = bare_extraction(sys.stdin.read(), include_comments=False, include_tables=True)
+if data and data.get('text'):
+    out = {'text': data['text']}
+    if data.get('author'): out['author'] = data['author']
+    if data.get('date'): out['date'] = data['date']
+    if data.get('categories'): out['categories'] = data['categories']
+    if data.get('sitename'): out['sitename'] = data['sitename']
+    if data.get('description'): out['description'] = data['description']
+    print(json.dumps(out))
+" <<< "$html" 2>/dev/null || true)"
+        if [ -n "$result" ]; then
+            echo "$result"
+            return
+        fi
+    fi
+
+    # Method 3: pandoc (no metadata, just text)
+    if command -v pandoc >/dev/null 2>&1; then
+        local result
+        result="$(echo "$html" | pandoc -f html -t markdown \
+            --wrap=none --strip-comments 2>/dev/null || true)"
+        if [ -n "$result" ]; then
+            # Wrap in JSON for consistent handling downstream.
+            python3 -c "import json,sys; print(json.dumps({'text':sys.stdin.read()}))" <<< "$result"
+            return
+        fi
+    fi
+
+    # Method 4: w3m / lynx (no metadata, just text)
+    if command -v w3m >/dev/null 2>&1; then
+        local result
+        result="$(echo "$html" | w3m -T text/html -dump 2>/dev/null || true)"
+        if [ -n "$result" ]; then
+            python3 -c "import json,sys; print(json.dumps({'text':sys.stdin.read()}))" <<< "$result"
+            return
+        fi
+    fi
+
+    if command -v lynx >/dev/null 2>&1; then
+        local result
+        result="$(echo "$html" | lynx -stdin -dump -nolist -width=80 2>/dev/null || true)"
+        if [ -n "$result" ]; then
+            python3 -c "import json,sys; print(json.dumps({'text':sys.stdin.read()}))" <<< "$result"
+            return
+        fi
+    fi
+}
+
+READABLE_JSON=""
+READABLE_BODY=""
+ARTICLE_AUTHOR=""
+ARTICLE_DATE=""
+if [ "$FETCH_READABLE" = "1" ]; then
+    READABLE_JSON="$(fetch_readable "$URL")"
+    if [ -n "$READABLE_JSON" ]; then
+        # Parse the JSON output from fetch_readable.
+        eval "$(python3 -c "
+import json, sys, shlex
+try:
+    data = json.loads(sys.stdin.read())
+    print('READABLE_BODY=' + shlex.quote(data.get('text', '')))
+    print('ARTICLE_AUTHOR=' + shlex.quote(data.get('author', '')))
+    print('ARTICLE_DATE=' + shlex.quote(data.get('date', '')))
+except:
+    print('READABLE_BODY=')
+" <<< "$READABLE_JSON" 2>/dev/null)"
+    fi
+fi
+
+# ---- Write the file ----
+OUT_DIR="$WEB_DIR/$DATE_PATH"
+mkdir -p "$OUT_DIR"
+FILE="$OUT_DIR/${STAMP}-${SLUG}.md"
+
+{
+    echo '---'
+    printf 'title: "%s"\n' "$(echo "$TITLE" | sed 's/"/\\"/g')"
+    printf 'url: "%s"\n' "$URL"
+    printf 'feed: "%s"\n' "$(echo "$FEED" | sed 's/"/\\"/g')"
+    printf 'created: "%s"\n' "$CREATED"
+    # Include article author/date if trafilatura found them.
+    if [ -n "$ARTICLE_AUTHOR" ]; then
+        printf 'author: "%s"\n' "$(echo "$ARTICLE_AUTHOR" | sed 's/"/\\"/g')"
+    fi
+    if [ -n "$ARTICLE_DATE" ]; then
+        printf 'published: "%s"\n' "$ARTICLE_DATE"
+    fi
+    printf 'tags: %s\n' "$TAGS_YAML"
+    echo '---'
+    echo
+
+    if [ -n "$DESCRIPTION" ]; then
+        echo "$DESCRIPTION"
+        echo
+    fi
+
+    if [ -n "$READABLE_BODY" ]; then
+        echo "---"
+        echo
+        echo "$READABLE_BODY"
+    fi
+
+    echo
+    echo "<!-- Your notes below -->"
+    echo
+} > "$FILE"
+
+if (( EDIT_AFTER )); then
+    "${VISUAL:-${EDITOR:-vim}}" "$FILE"
+fi
+
+# Print path to stderr (not stdout — newsboat treats stdout as error message).
+printf '%s\n' "$FILE" >&2
