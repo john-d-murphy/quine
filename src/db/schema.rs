@@ -8,13 +8,13 @@ use rusqlite::Connection;
 //| - edges: [[links]] between files. Source, target, optional fragment.
 //| - regions: @region/@end spans with extracted prose.
 //| - attributes: frontmatter key-value pairs. Always strings.
-//| - roots: directories with life.yaml. Discovery tree structure.
+//| - roots: directories with quine.yaml. Discovery tree structure.
 //| - refs: discovery edges between roots.
 //| - changelog: append-only log of node/edge adds and removes.
 //|
 //| Primary keys enforce design rules: (file, name) on regions prevents
 //| duplicate region names. CHECK constraints on changelog close the
-//| action/kind vocabulary. Indices on edges(target) make life mv fast.
+//| action/kind vocabulary. Indices on edges(target) make quine mv fast.
 
 const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS nodes (

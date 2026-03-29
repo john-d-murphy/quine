@@ -14,6 +14,7 @@
 /// parameterize it. Adding a new language is a new definition,
 /// not new code.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct ExtractorDef {
     pub name: String,
     pub patterns: Vec<String>,
@@ -103,10 +104,7 @@ pub fn builtin_extractors() -> Vec<ExtractorDef> {
 
 /// Find the matching extractor for a file path based on extension.
 /// Returns None if no extractor matches (file is a leaf).
-pub fn find_extractor<'a>(
-    path: &str,
-    extractors: &'a [ExtractorDef],
-) -> Option<&'a ExtractorDef> {
+pub fn find_extractor<'a>(path: &str, extractors: &'a [ExtractorDef]) -> Option<&'a ExtractorDef> {
     let path_lower = path.to_lowercase();
 
     for ext in extractors {

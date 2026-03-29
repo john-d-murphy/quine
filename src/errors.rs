@@ -3,11 +3,11 @@ use thiserror::Error;
 
 // @region severity-model
 //| The error system encodes the design doc's severity model as types.
-//| Hard errors (LifeError) stop collection — they represent violations
+//| Hard errors (QuineError) stop collection — they represent violations
 //| of design rules: nested regions, duplicate region names, missing
 //| required keys, broken references.
 //|
-//| Soft warnings (LifeWarning) let collection continue — they represent
+//| Soft warnings (QuineWarning) let collection continue — they represent
 //| expected conditions: dangling edges (target not yet created),
 //| dangling refs (directory not yet created), files with no extractor
 //| (binary leaves).
@@ -19,7 +19,8 @@ use thiserror::Error;
 
 /// Hard errors — collection stops.
 #[derive(Debug, Error)]
-pub enum LifeError {
+#[allow(dead_code)]
+pub enum QuineError {
     #[error("nested region in {file}: '{inner}' inside '{outer}'")]
     NestedRegion {
         file: NodePath,
@@ -43,7 +44,7 @@ pub enum LifeError {
     #[error("broken ref: {from} -> {to} (target previously existed)")]
     BrokenRef { from: NodePath, to: NodePath },
 
-    #[error("no life.yaml found at seed: {path}")]
+    #[error("no quine.yaml found at seed: {path}")]
     NoSeed { path: NodePath },
 
     #[error("{count} broken references detected")]
@@ -59,9 +60,9 @@ pub enum LifeError {
     Db(#[from] rusqlite::Error),
 }
 
-impl From<serde_yaml::Error> for LifeError {
+impl From<serde_yaml::Error> for QuineError {
     fn from(e: serde_yaml::Error) -> Self {
-        LifeError::YamlParse {
+        QuineError::YamlParse {
             path: String::new(),
             msg: e.to_string(),
         }
@@ -70,11 +71,12 @@ impl From<serde_yaml::Error> for LifeError {
 
 /// Soft warnings — collection continues.
 #[derive(Debug)]
-pub enum LifeWarning {
+#[allow(dead_code)]
+pub enum QuineWarning {
     /// Edge target has never existed in the graph.
     DanglingEdge { from: NodePath, to: NodePath },
 
-    /// Ref target directory does not exist or has no life.yaml.
+    /// Ref target directory does not exist or has no quine.yaml.
     DanglingRef { from: NodePath, to: NodePath },
 
     /// No extractor matched this file; it's a leaf node.
@@ -84,22 +86,22 @@ pub enum LifeWarning {
     BrokenEdge { from: NodePath, to: NodePath },
 }
 
-impl std::fmt::Display for LifeWarning {
+impl std::fmt::Display for QuineWarning {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            LifeWarning::DanglingEdge { from, to } => {
+            QuineWarning::DanglingEdge { from, to } => {
                 write!(f, "dangling edge: {} -> {} (target not found)", from, to)
             }
-            LifeWarning::DanglingRef { from, to } => {
+            QuineWarning::DanglingRef { from, to } => {
                 write!(f, "dangling ref: {} -> {} (directory not found)", from, to)
             }
-            LifeWarning::NoExtractor { file } => {
+            QuineWarning::NoExtractor { file } => {
                 write!(f, "no extractor for {} (treated as leaf)", file)
             }
-            LifeWarning::BrokenEdge { from, to } => {
+            QuineWarning::BrokenEdge { from, to } => {
                 write!(
                     f,
-                    "BROKEN: {} -> {} (target was removed without life mv)",
+                    "BROKEN: {} -> {} (target was removed without quine mv)",
                     from, to
                 )
             }
@@ -107,5 +109,5 @@ impl std::fmt::Display for LifeWarning {
     }
 }
 
-pub type Result<T> = std::result::Result<T, LifeError>;
+pub type Result<T> = std::result::Result<T, QuineError>;
 // @end severity-model

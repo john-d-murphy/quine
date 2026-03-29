@@ -3,23 +3,23 @@ use std::fs;
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 
-use crate::errors::{LifeError, LifeWarning, Result};
+use crate::errors::{QuineError, QuineWarning, Result};
 use crate::types::*;
 
-pub const DEFINITION_FILE: &str = "life.yaml";
-pub const STOP_FILE: &str = ".life-stop";
+pub const DEFINITION_FILE: &str = "quine.yaml";
+pub const STOP_FILE: &str = ".quine-stop";
 
 /// Result of walking from a seed.
 #[derive(Debug, Default)]
 pub struct WalkResult {
     pub files: Vec<WalkedFile>,
     pub roots: Vec<Root>,
-    pub warnings: Vec<LifeWarning>,
+    pub warnings: Vec<QuineWarning>,
 }
 
 // @region walk-seed
 //| Collection starts here. The seed is a single directory path — the
-//| CLI argument to `life collect`. The walker reads its life.yaml,
+//| CLI argument to `quine collect`. The walker reads its quine.yaml,
 //| walks the subtree, follows refs to other roots, and recurses.
 //| This is phase 1: walk, hash, diff. Same operation everywhere,
 //| regardless of what's in the files.
@@ -28,7 +28,7 @@ pub struct WalkResult {
 /// The seed path can be relative — it will be resolved against cwd.
 pub fn walk_seed(seed: &Path) -> Result<WalkResult> {
     let seed_path = NodePath::from_cwd(seed).ok_or_else(|| {
-        LifeError::Io(std::io::Error::new(
+        QuineError::Io(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
             format!("cannot resolve seed path: {}", seed.display()),
         ))
@@ -36,21 +36,26 @@ pub fn walk_seed(seed: &Path) -> Result<WalkResult> {
 
     let def_file = seed_path.as_path().join(DEFINITION_FILE);
     if !def_file.exists() {
-        return Err(LifeError::NoSeed { path: seed_path });
+        return Err(QuineError::NoSeed { path: seed_path });
     }
 
     let mut result = WalkResult::default();
     let mut seen_inodes: HashSet<u64> = HashSet::new();
     let mut visited_roots: HashSet<NodePath> = HashSet::new();
 
-    walk_root(&seed_path, &mut result, &mut seen_inodes, &mut visited_roots)?;
+    walk_root(
+        &seed_path,
+        &mut result,
+        &mut seen_inodes,
+        &mut visited_roots,
+    )?;
 
     Ok(result)
 }
 // @end walk-seed
 
 // @region walk-root
-//| Each root is a directory with a life.yaml. The walker reads the
+//| Each root is a directory with a quine.yaml. The walker reads the
 //| definition file, registers the root, walks its subtree for files,
 //| then follows refs to discover other roots. Refs are discovery,
 //| not permission — they expand the scope of what's known.
@@ -74,17 +79,16 @@ fn walk_root(
     // Parse the definition file.
     let def_file_path = root_path.as_path().join(DEFINITION_FILE);
     let def_content = fs::read_to_string(&def_file_path).map_err(|e| {
-        LifeError::Io(std::io::Error::new(
+        QuineError::Io(std::io::Error::new(
             e.kind(),
             format!("reading {}: {}", def_file_path.display(), e),
         ))
     })?;
-    let def: DefinitionFile = serde_yaml::from_str(&def_content).map_err(|e| {
-        LifeError::YamlParse {
+    let def: DefinitionFile =
+        serde_yaml::from_str(&def_content).map_err(|e| QuineError::YamlParse {
             path: def_file_path.display().to_string(),
             msg: e.to_string(),
-        }
-    })?;
+        })?;
 
     // Build the Root, expanding ~ in ref paths.
     let refs: Vec<NodePath> = def
@@ -107,7 +111,7 @@ fn walk_root(
     for ref_path in &refs {
         let ref_dir = ref_path.as_path();
         if !ref_dir.exists() {
-            result.warnings.push(LifeWarning::DanglingRef {
+            result.warnings.push(QuineWarning::DanglingRef {
                 from: root_path.clone(),
                 to: ref_path.clone(),
             });
@@ -118,7 +122,7 @@ fn walk_root(
         if ref_def.exists() {
             walk_root(ref_path, result, seen_inodes, visited_roots)?;
         } else {
-            result.warnings.push(LifeWarning::DanglingRef {
+            result.warnings.push(QuineWarning::DanglingRef {
                 from: root_path.clone(),
                 to: ref_path.clone(),
             });
@@ -130,10 +134,10 @@ fn walk_root(
 // @end walk-root
 
 // @region walk-subtree
-//| The subtree walker is where .life-stop and sub-root boundaries
+//| The subtree walker is where .quine-stop and sub-root boundaries
 //| are enforced. When the walker encounters a directory containing
-//| .life-stop, it skips it entirely — the subtree is void. When it
-//| finds a life.yaml in a subdirectory, that directory is a separate
+//| .quine-stop, it skips it entirely — the subtree is void. When it
+//| finds a quine.yaml in a subdirectory, that directory is a separate
 //| root with its own identity. The walker delegates to walk_root
 //| rather than descending — the sub-root owns its own subtree.
 //|
@@ -141,8 +145,8 @@ fn walk_root(
 //| has been seen before, the walker stops. Files are hashed with
 //| SHA-256 for content-addressed diffing.
 
-/// Walk a subtree, registering all files. Respects .life-stop and
-/// sub-roots (life.yaml in subdirectories).
+/// Walk a subtree, registering all files. Respects .quine-stop and
+/// sub-roots (quine.yaml in subdirectories).
 fn walk_subtree(
     dir: &NodePath,
     owning_root: &NodePath,
@@ -178,12 +182,12 @@ fn walk_subtree(
                 continue;
             }
 
-            // Check for .life-stop — halt, don't descend.
+            // Check for .quine-stop — halt, don't descend.
             if entry_path.join(STOP_FILE).exists() {
                 continue;
             }
 
-            // Check for sub-root (life.yaml in this directory).
+            // Check for sub-root (quine.yaml in this directory).
             if entry_path.join(DEFINITION_FILE).exists() {
                 if let Some(sub_root) = NodePath::new(&entry_path) {
                     if !visited_roots.contains(&sub_root) {
@@ -300,7 +304,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
 
         fs::write(
-            dir.path().join("life.yaml"),
+            dir.path().join("quine.yaml"),
             "name: \"test-root\"\nrefs: []\n",
         )
         .unwrap();
@@ -327,7 +331,7 @@ mod tests {
             .iter()
             .map(|f| f.path.as_path().file_name().unwrap().to_str().unwrap())
             .collect();
-        assert!(names.contains(&"life.yaml"));
+        assert!(names.contains(&"quine.yaml"));
         assert!(names.contains(&"hello.md"));
         assert!(names.contains(&"notes.md"));
         assert!(names.contains(&"deep.md"));
@@ -335,9 +339,9 @@ mod tests {
     }
 
     #[test]
-    fn walk_respects_life_stop() {
+    fn walk_respects_quine_stop() {
         let dir = setup_test_dir();
-        fs::write(dir.path().join("sub/.life-stop"), "").unwrap();
+        fs::write(dir.path().join("sub/.quine-stop"), "").unwrap();
 
         let result = walk_seed(dir.path()).unwrap();
 
@@ -360,7 +364,7 @@ mod tests {
     fn walk_warns_on_dangling_ref() {
         let dir = tempfile::tempdir().unwrap();
         fs::write(
-            dir.path().join("life.yaml"),
+            dir.path().join("quine.yaml"),
             "name: \"test\"\nrefs:\n  - path: /nonexistent/path\n",
         )
         .unwrap();
@@ -369,7 +373,7 @@ mod tests {
         assert_eq!(result.warnings.len(), 1);
         assert!(matches!(
             &result.warnings[0],
-            LifeWarning::DanglingRef { .. }
+            QuineWarning::DanglingRef { .. }
         ));
     }
 
@@ -379,7 +383,7 @@ mod tests {
 
         fs::create_dir(dir.path().join("subroot")).unwrap();
         fs::write(
-            dir.path().join("subroot/life.yaml"),
+            dir.path().join("subroot/quine.yaml"),
             "name: \"sub-root\"\nrefs: []\n",
         )
         .unwrap();
@@ -399,7 +403,7 @@ mod tests {
 
         fs::create_dir(dir.path().join("subroot")).unwrap();
         fs::write(
-            dir.path().join("subroot/life.yaml"),
+            dir.path().join("subroot/quine.yaml"),
             "name: \"sub-root\"\nrefs: []\n",
         )
         .unwrap();
@@ -465,7 +469,7 @@ mod tests {
 
         // dir2 is a separate root.
         fs::write(
-            dir2.path().join("life.yaml"),
+            dir2.path().join("quine.yaml"),
             "name: \"external\"\nrefs: []\n",
         )
         .unwrap();
@@ -474,7 +478,7 @@ mod tests {
         // dir1 refs dir2.
         let ref_path = dir2.path().to_str().unwrap();
         fs::write(
-            dir1.path().join("life.yaml"),
+            dir1.path().join("quine.yaml"),
             format!("name: \"main\"\nrefs:\n  - path: {}\n", ref_path),
         )
         .unwrap();
@@ -488,8 +492,14 @@ mod tests {
         assert!(names.contains(&"external"));
 
         // Should have files from both roots.
-        let has_local = result.files.iter().any(|f| f.path.as_str().ends_with("local.md"));
-        let has_data = result.files.iter().any(|f| f.path.as_str().ends_with("data.md"));
+        let has_local = result
+            .files
+            .iter()
+            .any(|f| f.path.as_str().ends_with("local.md"));
+        let has_data = result
+            .files
+            .iter()
+            .any(|f| f.path.as_str().ends_with("data.md"));
         assert!(has_local);
         assert!(has_data);
     }

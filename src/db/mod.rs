@@ -1,5 +1,5 @@
-pub mod schema;
 pub mod changelog;
+pub mod schema;
 
 use rusqlite::Connection;
 use std::collections::HashSet;
@@ -46,6 +46,7 @@ impl Db {
     // ---- Node operations ----
 
     /// Get all node paths currently in the DB.
+    #[allow(dead_code)]
     pub fn all_node_paths(&self) -> Result<Vec<NodePath>> {
         let mut stmt = self.conn.prepare("SELECT path FROM nodes")?;
         let paths = stmt
@@ -60,6 +61,7 @@ impl Db {
     }
 
     /// Look up the stored hash for a node. Returns None if not in DB.
+    #[allow(dead_code)]
     pub fn node_hash(&self, path: &NodePath) -> Result<Option<String>> {
         let mut stmt = self
             .conn
@@ -118,10 +120,11 @@ impl Db {
     }
 
     /// Get all edges whose target matches a given path.
+    #[allow(dead_code)]
     pub fn incoming_edges(&self, target: &NodePath) -> Result<Vec<(NodePath, Option<String>)>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT source, fragment FROM edges WHERE target = ?1",
-        )?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT source, fragment FROM edges WHERE target = ?1")?;
         let edges = stmt
             .query_map([target.as_str()], |row| {
                 let source: String = row.get(0)?;
@@ -139,11 +142,7 @@ impl Db {
         self.conn.execute(
             "INSERT OR IGNORE INTO edges (source, target, fragment)
              VALUES (?1, ?2, ?3)",
-            rusqlite::params![
-                edge.source.as_str(),
-                edge.target.as_str(),
-                edge.fragment,
-            ],
+            rusqlite::params![edge.source.as_str(), edge.target.as_str(), edge.fragment,],
         )?;
         Ok(())
     }
@@ -167,7 +166,11 @@ impl Db {
                 region.name,
                 region.start_line,
                 region.end_line,
-                if prose_text.is_empty() { None } else { Some(prose_text) },
+                if prose_text.is_empty() {
+                    None
+                } else {
+                    Some(prose_text)
+                },
             ],
         )?;
         Ok(())
@@ -204,10 +207,8 @@ impl Db {
             rusqlite::params![root.path.as_str(), root.name],
         )?;
         // Clear old refs for this root and re-insert.
-        self.conn.execute(
-            "DELETE FROM refs WHERE source = ?1",
-            [root.path.as_str()],
-        )?;
+        self.conn
+            .execute("DELETE FROM refs WHERE source = ?1", [root.path.as_str()])?;
         for r in &root.refs {
             self.conn.execute(
                 "INSERT INTO refs (source, target) VALUES (?1, ?2)",
@@ -248,9 +249,12 @@ impl Db {
     /// regions, and attributes.
     pub fn remove_file(&self, path: &NodePath) -> Result<()> {
         let p = path.as_str();
-        self.conn.execute("DELETE FROM nodes WHERE path = ?1", [p])?;
-        self.conn.execute("DELETE FROM edges WHERE source = ?1", [p])?;
-        self.conn.execute("DELETE FROM regions WHERE file = ?1", [p])?;
+        self.conn
+            .execute("DELETE FROM nodes WHERE path = ?1", [p])?;
+        self.conn
+            .execute("DELETE FROM edges WHERE source = ?1", [p])?;
+        self.conn
+            .execute("DELETE FROM regions WHERE file = ?1", [p])?;
         self.conn
             .execute("DELETE FROM attributes WHERE file = ?1", [p])?;
         Ok(())
@@ -347,7 +351,10 @@ mod tests {
         db.remove_file(&path).unwrap();
 
         assert!(db.all_node_paths().unwrap().is_empty());
-        assert!(db.incoming_edges(&NodePath::new("/test/other.md").unwrap()).unwrap().is_empty());
+        assert!(db
+            .incoming_edges(&NodePath::new("/test/other.md").unwrap())
+            .unwrap()
+            .is_empty());
     }
 
     #[test]

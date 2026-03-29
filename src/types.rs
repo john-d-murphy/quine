@@ -68,6 +68,7 @@ impl NodePath {
         &self.0
     }
 
+    #[allow(dead_code)]
     pub fn to_path_buf(&self) -> PathBuf {
         self.0.clone()
     }
@@ -78,11 +79,13 @@ impl NodePath {
     }
 
     /// Check if this path starts with the given prefix.
+    #[allow(dead_code)]
     pub fn starts_with(&self, prefix: &NodePath) -> bool {
         self.0.starts_with(&prefix.0)
     }
 
     /// Join a child component onto this path, returning a new NodePath.
+    #[allow(dead_code)]
     pub fn join(&self, child: impl AsRef<Path>) -> Self {
         NodePath(self.0.join(child))
     }
@@ -138,13 +141,13 @@ pub struct Attribute {
 // @end graph-primitives
 
 // @region discovery-types
-//| The discovery tree is formed by definition files (life.yaml).
+//| The discovery tree is formed by definition files (quine.yaml).
 //| A Root is a directory that claims its subtree. Refs are edges
 //| in the discovery tree — they tell the walker where else to look.
 //| This is separate from the knowledge graph: discovery is
 //| infrastructure, the knowledge graph is the thing you query.
 
-/// A root directory — a directory containing a life.yaml.
+/// A root directory — a directory containing a quine.yaml.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Root {
     pub path: NodePath,
@@ -175,11 +178,11 @@ pub struct Extracted {
 pub struct WalkDiff {
     pub added: Vec<WalkedFile>,
     pub removed: Vec<NodePath>,
-    pub changed: Vec<WalkedFile>,  // hash differs from DB
+    pub changed: Vec<WalkedFile>, // hash differs from DB
     pub unchanged: Vec<NodePath>,
 }
 
-/// The definition file (life.yaml) structure.
+/// The definition file (quine.yaml) structure.
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct DefinitionFile {
     pub name: String,
@@ -187,7 +190,7 @@ pub struct DefinitionFile {
     pub refs: Vec<RefEntry>,
 }
 
-/// A ref entry in life.yaml.
+/// A ref entry in quine.yaml.
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct RefEntry {
     pub path: String,

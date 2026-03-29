@@ -175,11 +175,7 @@ struct OpenRegion {
 /// Extract the comment body from a line, given a prefix.
 /// Returns None if the line doesn't start with the prefix (after trimming).
 fn extract_comment_body<'a>(trimmed: &'a str, prefix: &str) -> Option<&'a str> {
-    if trimmed.starts_with(prefix) {
-        Some(&trimmed[prefix.len()..])
-    } else {
-        None
-    }
+    trimmed.strip_prefix(prefix)
 }
 
 /// Parse `@region <name>` from comment body text.
@@ -215,11 +211,7 @@ fn parse_region_end(body: &str) -> Option<String> {
 /// Parse a prose marker line. The convention is `|` immediately after
 /// the comment prefix. Returns the prose text (after the pipe).
 fn parse_prose_line(body: &str) -> Option<&str> {
-    if body.starts_with('|') {
-        Some(body[1..].trim_start_matches(' '))
-    } else {
-        None
-    }
+    body.strip_prefix('|').map(|s| s.trim_start_matches(' '))
 }
 // @end region-parser
 

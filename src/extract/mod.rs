@@ -6,7 +6,7 @@ pub mod regions;
 
 use std::fs;
 
-use crate::errors::{LifeError, LifeWarning};
+use crate::errors::{QuineError, QuineWarning};
 use crate::types::*;
 
 use config::{builtin_extractors, find_extractor, ExtractorDef};
@@ -14,7 +14,7 @@ use config::{builtin_extractors, find_extractor, ExtractorDef};
 /// Result of extraction across multiple files.
 pub struct ExtractionResult {
     pub extracted: Vec<Extracted>,
-    pub warnings: Vec<LifeWarning>,
+    pub warnings: Vec<QuineWarning>,
 }
 
 /// Run extraction on a list of files. Returns extracted data and warnings.
@@ -24,7 +24,7 @@ pub struct ExtractionResult {
 /// - Find a matching extractor based on file extension.
 /// - If no match, emit a NoExtractor warning (file is a leaf).
 /// - If matched, read file contents and run the extraction engine.
-pub fn run(files: &[WalkedFile]) -> Result<ExtractionResult, LifeError> {
+pub fn run(files: &[WalkedFile]) -> Result<ExtractionResult, QuineError> {
     let extractors = builtin_extractors();
     extract_files(files, &extractors)
 }
@@ -32,7 +32,7 @@ pub fn run(files: &[WalkedFile]) -> Result<ExtractionResult, LifeError> {
 fn extract_files(
     files: &[WalkedFile],
     extractors: &[ExtractorDef],
-) -> Result<ExtractionResult, LifeError> {
+) -> Result<ExtractionResult, QuineError> {
     let mut result = ExtractionResult {
         extracted: Vec::new(),
         warnings: Vec::new(),
@@ -44,7 +44,7 @@ fn extract_files(
         let def = match find_extractor(path_str, extractors) {
             Some(d) => d,
             None => {
-                result.warnings.push(LifeWarning::NoExtractor {
+                result.warnings.push(QuineWarning::NoExtractor {
                     file: file.path.clone(),
                 });
                 continue;

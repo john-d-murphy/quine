@@ -6,10 +6,10 @@ mod types;
 mod walk;
 
 use clap::{Parser, Subcommand};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Parser)]
-#[command(name = "life", about = "A personal knowledge graph.", version)]
+#[command(name = "quine", about = "A personal knowledge graph.", version)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -19,11 +19,11 @@ struct Cli {
 enum Commands {
     /// Walk, hash, extract, and build the graph from a seed directory.
     Collect {
-        /// Path to the seed directory (must contain life.yaml).
+        /// Path to the seed directory (must contain quine.yaml).
         seed: PathBuf,
 
         /// Path to the database file.
-        #[arg(long, default_value = "life.db")]
+        #[arg(long, default_value = "quine.db")]
         db: PathBuf,
     },
 
@@ -34,11 +34,11 @@ enum Commands {
         query: String,
 
         /// Path to the database file.
-        #[arg(long, default_value = "life.db")]
+        #[arg(long, default_value = "quine.db")]
         db: PathBuf,
     },
 
-    /// Create a life.yaml in a directory, making it a root.
+    /// Create a quine.yaml in a directory, making it a root.
     Init {
         /// Directory to initialize.
         #[arg(default_value = ".")]
@@ -49,13 +49,13 @@ enum Commands {
         name: Option<String>,
     },
 
-    /// Create a .life-stop sentinel in a directory.
+    /// Create a .quine-stop sentinel in a directory.
     Stop {
         /// Directory to stop the walker from entering.
         dir: PathBuf,
     },
 
-    /// Remove a .life-stop sentinel from a directory.
+    /// Remove a .quine-stop sentinel from a directory.
     Unstop {
         /// Directory to resume walking.
         dir: PathBuf,
@@ -64,7 +64,7 @@ enum Commands {
     /// Show the discovery tree (all roots and their refs).
     Roots {
         /// Path to the database file.
-        #[arg(long, default_value = "life.db")]
+        #[arg(long, default_value = "quine.db")]
         db: PathBuf,
     },
 }
@@ -87,7 +87,7 @@ fn main() {
     }
 }
 
-fn cmd_collect(seed: &PathBuf, db: &PathBuf) -> errors::Result<()> {
+fn cmd_collect(seed: &Path, db: &Path) -> errors::Result<()> {
     let report = commands::collect::run(seed, db)?;
     println!("collect complete:");
     println!("  roots discovered: {}", report.roots_discovered);
@@ -105,15 +105,15 @@ fn cmd_collect(seed: &PathBuf, db: &PathBuf) -> errors::Result<()> {
     Ok(())
 }
 
-fn cmd_find(query: &str, db: &PathBuf) -> errors::Result<()> {
+fn cmd_find(query: &str, db: &Path) -> errors::Result<()> {
     commands::find::run(query, db)
 }
 
-fn cmd_init(dir: &PathBuf, name: Option<String>) -> errors::Result<()> {
+fn cmd_init(dir: &Path, name: Option<String>) -> errors::Result<()> {
     use std::fs;
 
     let dir_path = types::NodePath::from_cwd(dir).ok_or_else(|| {
-        errors::LifeError::Io(std::io::Error::new(
+        errors::QuineError::Io(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
             format!("cannot resolve path: {}", dir.display()),
         ))
@@ -121,7 +121,7 @@ fn cmd_init(dir: &PathBuf, name: Option<String>) -> errors::Result<()> {
 
     let yaml_path = dir_path.as_path().join(walk::DEFINITION_FILE);
     if yaml_path.exists() {
-        eprintln!("life.yaml already exists at {}", yaml_path.display());
+        eprintln!("quine.yaml already exists at {}", yaml_path.display());
         std::process::exit(1);
     }
 
@@ -143,11 +143,11 @@ fn cmd_init(dir: &PathBuf, name: Option<String>) -> errors::Result<()> {
     Ok(())
 }
 
-fn cmd_stop(dir: &PathBuf) -> errors::Result<()> {
+fn cmd_stop(dir: &Path) -> errors::Result<()> {
     use std::fs;
 
     let dir_path = types::NodePath::from_cwd(dir).ok_or_else(|| {
-        errors::LifeError::Io(std::io::Error::new(
+        errors::QuineError::Io(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
             format!("cannot resolve path: {}", dir.display()),
         ))
@@ -155,7 +155,7 @@ fn cmd_stop(dir: &PathBuf) -> errors::Result<()> {
 
     let stop_path = dir_path.as_path().join(walk::STOP_FILE);
     if stop_path.exists() {
-        eprintln!(".life-stop already exists at {}", stop_path.display());
+        eprintln!(".quine-stop already exists at {}", stop_path.display());
         return Ok(());
     }
 
@@ -166,11 +166,11 @@ fn cmd_stop(dir: &PathBuf) -> errors::Result<()> {
     Ok(())
 }
 
-fn cmd_unstop(dir: &PathBuf) -> errors::Result<()> {
+fn cmd_unstop(dir: &Path) -> errors::Result<()> {
     use std::fs;
 
     let dir_path = types::NodePath::from_cwd(dir).ok_or_else(|| {
-        errors::LifeError::Io(std::io::Error::new(
+        errors::QuineError::Io(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
             format!("cannot resolve path: {}", dir.display()),
         ))
@@ -178,7 +178,7 @@ fn cmd_unstop(dir: &PathBuf) -> errors::Result<()> {
 
     let stop_path = dir_path.as_path().join(walk::STOP_FILE);
     if !stop_path.exists() {
-        eprintln!("no .life-stop at {}", stop_path.display());
+        eprintln!("no .quine-stop at {}", stop_path.display());
         return Ok(());
     }
 
@@ -188,7 +188,7 @@ fn cmd_unstop(dir: &PathBuf) -> errors::Result<()> {
     Ok(())
 }
 
-fn cmd_roots(db: &PathBuf) -> errors::Result<()> {
+fn cmd_roots(db: &Path) -> errors::Result<()> {
     let db = db::Db::open(db)?;
     let roots = db.list_roots()?;
 

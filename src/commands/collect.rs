@@ -7,7 +7,7 @@ use crate::walk;
 
 // @region collect-pipeline
 //| The collect command is the full pipeline: phase 1 (walk), diff,
-//| phase 2 (extract), and DB update — all in one transaction.
+//| phase 2 (extract), and DB update.
 //|
 //| This is the compiler in action: files on disk are lexed (walked
 //| and hashed), parsed (links, regions, and frontmatter extracted),
@@ -16,7 +16,7 @@ use crate::walk;
 //|
 //| The pipeline is the same every time, for every directory, regardless
 //| of what's in the files. The extractors handle format differences.
-//| The pipeline just orchestrates.
+//| The pipeline orchestrates.
 
 /// Report from a collect run.
 #[derive(Debug)]
