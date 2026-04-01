@@ -99,6 +99,13 @@ pub fn builtin_extractors() -> Vec<ExtractorDef> {
             block_comment: Some(("/*".into(), "*/".into())),
             freetext: false,
         },
+        ExtractorDef {
+            name: "abc".into(),
+            patterns: vec!["*.abc".into()],
+            line_comment: Some("%".into()),
+            block_comment: None,
+            freetext: false,
+        },
     ]
 }
 
@@ -155,6 +162,13 @@ mod tests {
         let extractors = builtin_extractors();
         let ext = find_extractor("/home/murphy/music/ovalprocess/main.scd", &extractors).unwrap();
         assert_eq!(ext.name, "supercollider");
+    }
+
+    #[test]
+    fn find_abc() {
+        let extractors = builtin_extractors();
+        let ext = find_extractor("/home/test/music.abc", &extractors).unwrap();
+        assert_eq!(ext.name, "abc");
     }
 
     #[test]
